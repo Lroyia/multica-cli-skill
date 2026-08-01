@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gitee.com/lroyia/multica-app/multica-cli-skill/config.schema.json",
+  "title": "multica-cli-skill config",
+  "description": "multica-cli-skill 读取的 Multica CLIConfig schema。配置搜索顺序为 --config <path> > <skill_dir>/config.json > $MULTICA_CLI_ORDER_CONFIG > ~/.multica/config.json。",
+  "type": "object",
+  "required": ["server_url", "token"],
+  "properties": {
+    "server_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "API 根地址（无尾斜杠）。自托管时改成 https://your-host/multica-api 等。",
+      "examples": ["https://api.multica.ai"]
+    },
+    "app_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "浏览器访问的 Web 地址，缺省回退 server_url。",
+      "examples": ["https://app.multica.ai"]
+    },
+    "workspace_id": {
+      "type": "string",
+      "description": "默认 workspace UUID。auto-match 成员 / 拉 /api/projects 时必填。",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "token": {
+      "type": "string",
+      "description": "PAT（mul_ / mcn_ 前缀）。会被 $MULTICA_TOKEN 环境变量覆盖。默认由 multica login 写入用户 CLI 配置。",
+      "pattern": "^(mul_|mcn_)[A-Za-z0-9_]+$"
+    }
+  },
+  "additionalProperties": true
+}

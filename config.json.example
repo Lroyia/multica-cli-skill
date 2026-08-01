@@ -1,0 +1,9 @@
+{
+  "_comment": "multica-cli-skill 自定义配置模板。默认无需复制：脚本直接读取 ~/.multica/config.json。配置搜索顺序为 --config <path> > <skill_dir>/config.json > $MULTICA_CLI_ORDER_CONFIG > ~/.multica/config.json。仅在使用 --config 显式覆盖、或把 config.json 放到 skill 目录下、或者设置 $MULTICA_CLI_ORDER_CONFIG 时复制并填写；真实 config.json 不得提交。",
+  "_usage": "cp config.json.example config.json，然后使用 bash scripts/order.sh ... --config ./config.json",
+
+  "server_url": "https://api.multica.ai",
+  "app_url": "https://app.multica.ai",
+  "workspace_id": "00000000-0000-0000-0000-000000000000",
+  "token": "mul_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+}
