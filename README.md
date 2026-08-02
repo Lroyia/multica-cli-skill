@@ -72,20 +72,43 @@ Other similar scenarios:
 
 ```text
 multica-cli-skill/
-├── SKILL.md
-├── README.md              # English (default)
-├── README.zh.md           # Chinese
-├── config.json.example    # Reference template for --config custom files only
+├── .claude-plugin/
+│   ├── plugin.json         # Claude Code plugin manifest
+│   └── marketplace.json    # Self-hosted marketplace entry
+├── skills/
+│   └── multica-cli-skill/  # The skill itself
+│       ├── SKILL.md
+│       ├── scripts/        # order.sh, list.sh, update.sh, comment.sh, attachments.sh
+│       └── references/     # multica-cli-skill-source-map.md
+├── README.md               # English (default)
+├── README.zh.md            # Chinese
+├── config.json.example     # Reference template for --config custom files only
 ├── config.schema.json
-├── .gitignore
-├── scripts/
-│   ├── order.sh           # Create issue
-│   ├── list.sh            # Query / search / detail
-│   ├── update.sh          # Update issue
-│   ├── comment.sh         # Comment CRUD / resolve
-│   └── attachments.sh     # Upload / list / delete attachment
-└── references/
-    └── multica-cli-skill-source-map.md
+├── LICENSE
+└── .gitignore
+```
+
+## Install as a Claude Code plugin
+
+The repository ships with a self-hosted marketplace. Add it once, then install the plugin:
+
+```text
+# 1. Add the marketplace (once)
+/plugin marketplace add lroyia/multica-cli-skill https://gitee.com/lroyia/multica-app/raw/master/multica-cli-skill/.claude-plugin/marketplace.json
+
+# 2. Install the plugin
+/plugin install multica-cli-skill@multica-cli-skill
+```
+
+After installation, the skill loads automatically when Claude Code needs it. Use it just like before — pass an `mul_xxx` token, fuzzy match assignees, create / query / update issues, post comments, upload attachments.
+
+To upgrade later:
+
+```text
+/plugin marketplace update multica-cli-skill
+/plugin install multica-cli-skill@multica-cli-skill   # reinstall
+# or
+claude plugin update multica-cli-skill
 ```
 
 ## Quick start (1 minute)
@@ -95,7 +118,7 @@ multica-cli-skill/
 multica login
 
 # 2. Enter the skill directory
-cd multica-cli-skill
+cd multica-cli-skill/skills/multica-cli-skill
 
 # 3. Create an issue
 bash scripts/order.sh \

@@ -72,20 +72,43 @@ bash scripts/update.sh MUL-123 --status in_review
 
 ```text
 multica-cli-skill/
-├── SKILL.md
-├── README.md              # 英文（默认）
-├── README.zh.md           # 中文
-├── config.json.example    # 仅供 --config 自定义文件参考
+├── .claude-plugin/
+│   ├── plugin.json         # Claude Code 插件 manifest
+│   └── marketplace.json    # 自托管 marketplace 条目
+├── skills/
+│   └── multica-cli-skill/  # skill 本身
+│       ├── SKILL.md
+│       ├── scripts/        # order.sh, list.sh, update.sh, comment.sh, attachments.sh
+│       └── references/     # multica-cli-skill-source-map.md
+├── README.md               # 英文（默认）
+├── README.zh.md            # 中文
+├── config.json.example     # 仅供 --config 自定义文件参考
 ├── config.schema.json
-├── .gitignore
-├── scripts/
-│   ├── order.sh           # 创建 issue
-│   ├── list.sh            # 查询 / 搜索 / 详情
-│   ├── update.sh          # 更新 issue
-│   ├── comment.sh         # 评论 CRUD / resolve
-│   └── attachments.sh     # 附件上传 / 查询 / 删除
-└── references/
-    └── multica-cli-skill-source-map.md
+├── LICENSE
+└── .gitignore
+```
+
+## 安装为 Claude Code 插件
+
+仓库自带一个自托管 marketplace。一次性加入 marketplace，然后安装插件：
+
+```text
+# 1. 加入 marketplace（一次性）
+/plugin marketplace add lroyia/multica-cli-skill https://gitee.com/lroyia/multica-app/raw/master/multica-cli-skill/.claude-plugin/marketplace.json
+
+# 2. 安装插件
+/plugin install multica-cli-skill@multica-cli-skill
+```
+
+安装完成后，skill 在 Claude Code 需要时自动加载。沿用原来的用法——传 `mul_xxx` token、按名字模糊匹配负责人、创建 / 查询 / 更新 issue、发评论、上传附件。
+
+后续升级：
+
+```text
+/plugin marketplace update multica-cli-skill
+/plugin install multica-cli-skill@multica-cli-skill   # 重装
+# 或
+claude plugin update multica-cli-skill
 ```
 
 ## 一分钟上手
@@ -95,7 +118,7 @@ multica-cli-skill/
 multica login
 
 # 2. 进入 skill
-cd multica-cli-skill
+cd multica-cli-skill/skills/multica-cli-skill
 
 # 3. 创建 issue
 bash scripts/order.sh \

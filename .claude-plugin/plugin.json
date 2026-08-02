@@ -1,0 +1,23 @@
+{
+  "name": "multica-cli-skill",
+  "version": "0.11.0",
+  "description": "Reuse the user's existing Multica CLI login (~/.multica/config.json) to create, query, and update Multica issues and manage comments and attachments via Bash + curl + jq. Fuzzy-matches assignees and projects by name. Works on Windows Git Bash, macOS, and Linux.",
+  "author": {
+    "name": "lroyia"
+  },
+  "homepage": "https://gitee.com/lroyia/multica-app/tree/master/multica-cli-skill",
+  "repository": {
+    "type": "git",
+    "url": "https://gitee.com/lroyia/multica-app.git",
+    "directory": "multica-cli-skill"
+  },
+  "license": "MIT",
+  "keywords": [
+    "multica",
+    "issue",
+    "project-management",
+    "fuzzy-match",
+    "curl",
+    "cli"
+  ]
+}

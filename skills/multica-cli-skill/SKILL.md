@@ -1,66 +1,14 @@
 ---
 name: multica-cli-skill
 description: "Use when you need to create, list, search, fetch, update, comment on, or manage attachments for Multica issues using the user's existing Multica CLI login. Reads `~/.multica/config.json` by default (written by `multica login`), with a config search order of `--config <path>` > `<skill_dir>/config.json` > `$MULTICA_CLI_ORDER_CONFIG` > `~/.multica/config.json`, plus `$MULTICA_TOKEN` overrides, and provides fuzzy assignee/project matching through Bash, curl, and jq. Works in Windows Git Bash, macOS, and Linux."
-homepage: https://gitee.com/lroyia/multica-app/tree/master/multica-cli-skill
-metadata:
-  openclaw:
-    emoji: 📋
-    os:
-      - darwin
-      - linux
-      - win32
-    requires:
-      bins:
-        - bash
-        - curl
-        - jq
-      env:
-        - MULTICA_TOKEN              # 可选；覆盖 CLI 配置中的 token
-        - MULTICA_CLI_ORDER_CONFIG   # 可选；指向自定义 CLIConfig 文件
-      config:
-        - ~/.multica/config.json     # multica login 写入的用户 CLI 配置
-    install:
-      - id: jq-brew
-        kind: brew
-        formula: jq
-        label: "macOS: brew install jq"
-      - id: jq-apt
-        kind: apt
-        package: jq
-        label: "Debian/Ubuntu: sudo apt-get install -y jq"
-      - id: jq-dnf
-        kind: dnf
-        package: jq
-        label: "Fedora/RHEL: sudo dnf install -y jq"
-      - id: jq-choco
-        kind: choco
-        package: jq
-        label: "Windows: choco install jq"
-      - id: config-init
-        kind: manual
-        steps:
-          - "run multica login once to create ~/.multica/config.json"
-          - "optional: set MULTICA_CLI_ORDER_CONFIG or pass --config for another CLIConfig file"
-        label: "运行 multica login，复用用户 CLI 登录配置"
-    invocation:
-      userInvocable: true
-      disableModelInvocation: false
-      command: "bash scripts/order.sh"
-      args:
-        - "--title <必填>"
-        - "--description <必填>"
-        - "--assignee '<负责人模糊匹配>'"
-        - "--project '<项目模糊匹配>'"
-        - "--config <config.json 路径>（可选，默认 $MULTICA_CLI_ORDER_CONFIG 或 ~/.multica/config.json）"
-      # v0.10 补充：comment.sh <subcommand> list|add|update|delete|resolve|unresolve
-      # 详细参数见下面的 “comment.sh — 评论（v0.10 新增）” 章节。
-user-invocable: true
 allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 ---
 
 # 下单 + 自动匹配 + 查询 — Multica Issue 技能
 
 默认读取 `multica login` 写入的 `~/.multica/config.json`，直接调用 Multica 后端创建、查询、更新 issue，并管理评论和附件。适合希望复用本机 CLI 登录状态、但需要脚本化 fuzzy match 和完整 API 能力的用户。配置文件仅被读取，不会被本 skill 改写。
+
+> **v0.12 目录迁移**：本 skill 随 Claude Code 插件市场发布，从仓库根 `SKILL.md` / `scripts/` / `references/` 改为插件规范布局 `skills/multica-cli-skill/{SKILL.md, scripts/, references/}`。脚本里 `SKILL_DIR` 通过 `dirname(dirname(SCRIPT_PATH))` 计算，自动跟随新位置；`<skill_dir>/config.json` 现在指 `skills/multica-cli-skill/config.json`。
 
 > **v0.7 必填收紧**：下单接口（`order.sh`）的必填项现在是 **`--title`** / **`--description`** / **负责人**（`--assignee*` 任一） / **项目**（`--project*` 任一）。状态（`--status`）不传则服务端默认 `todo`（"待办"），与 `server/internal/handler/issue.go` 的 `CreateIssue` 默认行为一致。
 >
