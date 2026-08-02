@@ -1,24 +1,23 @@
 {
   "name": "multica-cli-skill",
   "owner": {
-    "name": "TODO: replace with your name"
+    "name": "Lroyia"
   },
   "metadata": {
     "description": "Multica CLI Skill marketplace — wrap the user's existing `multica login` config to script issue creation, query, update, comments, and attachments with Bash + curl + jq.",
-    "homepage": "TODO: replace with your plugin homepage URL"
+    "homepage": "https://github.com/Lroyia/multica-cli-skill"
   },
   "plugins": [
     {
       "name": "multica-cli-skill",
       "description": "Reuse the user's existing Multica CLI login (~/.multica/config.json) to create, query, and update Multica issues and manage comments and attachments via Bash + curl + jq. Fuzzy-matches assignees and projects by name. Works on Windows Git Bash, macOS, and Linux.",
       "author": {
-        "name": "TODO: replace with your name"
+        "name": "Lroyia"
       },
-      "homepage": "TODO: replace with your plugin homepage URL",
+      "homepage": "https://github.com/Lroyia/multica-cli-skill",
       "repository": {
         "type": "git",
-        "url": "TODO: replace with your git repository URL",
-        "directory": "multica-cli-skill"
+        "url": "https://github.com/Lroyia/multica-cli-skill.git"
       },
       "license": "MIT",
       "keywords": [
@@ -31,10 +30,9 @@
       ],
       "version": "0.11.0",
       "source": {
-        "source": "git-subdir",
-        "url": "TODO: replace with your git repository URL (without subdirectory)",
-        "path": "multica-cli-skill",
-        "ref": "TODO: replace with your branch name (e.g. main or master)"
+        "source": "git",
+        "url": "https://github.com/Lroyia/multica-cli-skill.git",
+        "ref": "main"
       }
     }
   ]
