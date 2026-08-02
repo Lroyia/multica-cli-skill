@@ -93,12 +93,15 @@ multica-cli-skill/
 The repository ships with a self-hosted marketplace. Add it once, then install the plugin:
 
 ```text
-# 1. Add the marketplace (once)
-/plugin marketplace add lroyia/multica-cli-skill https://gitee.com/lroyia/multica-app/raw/master/multica-cli-skill/.claude-plugin/marketplace.json
+# 1. Add the marketplace (once). Replace <raw-url-to-marketplace.json> with the
+#    raw URL of the .claude-plugin/marketplace.json file in this repo.
+/plugin marketplace add multica-cli-skill <raw-url-to-marketplace.json>
 
 # 2. Install the plugin
 /plugin install multica-cli-skill@multica-cli-skill
 ```
+
+> Before running the install command above, open `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` and replace the `TODO:` placeholders (author, homepage, repository URL, branch ref) with values that match where you host this repo.
 
 After installation, the skill loads automatically when Claude Code needs it. Use it just like before — pass an `mul_xxx` token, fuzzy match assignees, create / query / update issues, post comments, upload attachments.
 

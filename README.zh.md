@@ -93,12 +93,15 @@ multica-cli-skill/
 仓库自带一个自托管 marketplace。一次性加入 marketplace，然后安装插件：
 
 ```text
-# 1. 加入 marketplace（一次性）
-/plugin marketplace add lroyia/multica-cli-skill https://gitee.com/lroyia/multica-app/raw/master/multica-cli-skill/.claude-plugin/marketplace.json
+# 1. 加入 marketplace（一次性）。把 <marketplace.json 的 raw URL> 换成
+#    本仓库下 .claude-plugin/marketplace.json 文件的 raw 地址。
+/plugin marketplace add multica-cli-skill <marketplace.json 的 raw URL>
 
 # 2. 安装插件
 /plugin install multica-cli-skill@multica-cli-skill
 ```
+
+> 执行上面安装命令前，请先打开 `.claude-plugin/plugin.json` 和 `.claude-plugin/marketplace.json`，把里面的 `TODO:` 占位符（author、homepage、仓库 URL、分支 ref）替换成与你实际托管仓库匹配的值。
 
 安装完成后，skill 在 Claude Code 需要时自动加载。沿用原来的用法——传 `mul_xxx` token、按名字模糊匹配负责人、创建 / 查询 / 更新 issue、发评论、上传附件。
 

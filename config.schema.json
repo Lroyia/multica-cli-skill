@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://gitee.com/lroyia/multica-app/multica-cli-skill/config.schema.json",
+  "$id": "TODO: replace with a stable URL where this schema is hosted",
   "title": "multica-cli-skill config",
   "description": "multica-cli-skill 读取的 Multica CLIConfig schema。配置搜索顺序为 --config <path> > <skill_dir>/config.json > $MULTICA_CLI_ORDER_CONFIG > ~/.multica/config.json。",
   "type": "object",
