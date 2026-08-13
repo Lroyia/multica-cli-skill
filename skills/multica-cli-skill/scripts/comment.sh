@@ -387,7 +387,7 @@ preview_text() {
   local s="$1"
   local max=80
   if [[ ${#s} -gt $max ]]; then
-    echo "${s:0:$max}…"
+    echo "${s:0:$max}..."
   else
     echo "$s"
   fi
