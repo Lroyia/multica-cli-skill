@@ -87,6 +87,7 @@ resolve_config_path() {
 }
 
 command -v jq >/dev/null 2>&1 || die "jq is required. Install jq first."
+JQ="jq"
 
 # ---- 参数解析 ----
 CONFIG_PATH=""
@@ -156,10 +157,10 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   fi
   die "config file not found: $CONFIG_PATH"
 fi
-TOKEN="$(jq -r '.token       // empty' "$CONFIG_PATH")"
-SERVER_URL="$(jq -r '.server_url // empty' "$CONFIG_PATH")"
-APP_URL="$(jq   -r '.app_url    // empty' "$CONFIG_PATH")"
-WORKSPACE_ID="$(jq -r '.workspace_id // empty' "$CONFIG_PATH")"
+TOKEN="$($JQ -r '.token       // empty' "$CONFIG_PATH")"
+SERVER_URL="$($JQ -r '.server_url // empty' "$CONFIG_PATH")"
+APP_URL="$($JQ   -r '.app_url    // empty' "$CONFIG_PATH")"
+WORKSPACE_ID="$($JQ -r '.workspace_id // empty' "$CONFIG_PATH")"
 
 # $MULTICA_TOKEN 永远最高优先级
 [[ -n "${MULTICA_TOKEN:-}" ]] && TOKEN="$MULTICA_TOKEN"
@@ -215,7 +216,7 @@ ME_HTTP=$(curl -sS -o $TMP_DIR/me.json -w "%{http_code}" \
   -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')" \
   -H "X-Client-Capabilities: stable_attachment_urls" \
   -H "X-Workspace-ID: $WORKSPACE_ID" \
-  "$SERVER_URL/api/me?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')" || echo "000")
+  "$SERVER_URL/api/me?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')" || echo "000")
 if [[ "$ME_HTTP" != "200" ]]; then
   cat $TMP_DIR/me.json >&2 || true
   rm -f $TMP_DIR/me.json
@@ -231,7 +232,7 @@ ws_url() {
   if [[ -n "$q" ]]; then
     sep="&"
   fi
-  echo -n "$SERVER_URL$path?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')${q:+&$q}"
+  echo -n "$SERVER_URL$path?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')${q:+&$q}"
 }
 
 # resolve_issue_id <id-or-uuid>  → 解析成 UUID（如果是 LRO-N 这种 identifier，调 GET 拿真 UUID）
@@ -257,7 +258,7 @@ resolve_id_to_uuid() {
     die "resolve $kind '$id' → HTTP $code"
   fi
   local uuid
-  uuid=$(jq -r '.id // empty' "$out")
+  uuid=$($JQ -r '.id // empty' "$out")
   rm -f "$out"
   [[ -n "$uuid" ]] || die "resolve $kind '$id': empty id in response"
   echo -n "$uuid"
@@ -296,12 +297,12 @@ cmd_upload() {
 
   # 取响应
   local id ctype filename md_url url_field size
-  id=$(jq -r '.id // ""' "$out")
-  ctype=$(jq -r '.content_type // ""' "$out")
-  filename=$(jq -r '.filename // ""' "$out")
-  md_url=$(jq -r '.markdown_url // ""' "$out")
-  url_field=$(jq -r '.url // ""' "$out")
-  size=$(jq -r '.size_bytes // 0' "$out")
+  id=$($JQ -r '.id // ""' "$out")
+  ctype=$($JQ -r '.content_type // ""' "$out")
+  filename=$($JQ -r '.filename // ""' "$out")
+  md_url=$($JQ -r '.markdown_url // ""' "$out")
+  url_field=$($JQ -r '.url // ""' "$out")
+  size=$($JQ -r '.size_bytes // 0' "$out")
   rm -f "$out"
 
   # markdown snippet（图片 vs 文件）
@@ -316,7 +317,7 @@ cmd_upload() {
   fi
 
   if [[ "$OUTPUT_JSON" == "true" ]]; then
-    jq -n --arg id "$id" --arg filename "$filename" --arg content_type "$ctype" \
+    $JQ -n --arg id "$id" --arg filename "$filename" --arg content_type "$ctype" \
           --arg markdown_url "$md_url" --arg url "$url_field" \
           --argjson size_bytes "$size" --arg markdown "$md_snippet" \
           --arg issue_id "${issue_uuid:-}" --arg comment_id "${comment_uuid:-}" \
@@ -359,10 +360,10 @@ cmd_list() {
     cat "$out"
   else
     local n
-    n=$(jq 'length' "$out")
+    n=$($JQ 'length' "$out")
     echo "Issue $ISSUE_ID ($uuid): $n attachment(s)"
     if [[ "$n" -gt 0 ]]; then
-      jq -r '.[] | "  [\(.id[0:8])…] \(.filename) (\(.content_type), \(.size_bytes) B)\n    markdown_url: \(.markdown_url)"' "$out"
+      $JQ -r '.[] | "  [\(.id[0:8])…] \(.filename) (\(.content_type), \(.size_bytes) B)\n    markdown_url: \(.markdown_url)"' "$out"
     fi
   fi
   rm -f "$out"
@@ -386,7 +387,7 @@ cmd_get() {
   if [[ "$OUTPUT_JSON" == "true" ]]; then
     cat "$out"
   else
-    jq . "$out"
+    $JQ . "$out"
   fi
   rm -f "$out"
 }

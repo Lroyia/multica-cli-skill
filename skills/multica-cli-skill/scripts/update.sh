@@ -176,10 +176,11 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   die "config file not found: $CONFIG_PATH"
 fi
 command -v jq >/dev/null 2>&1 || die "jq is required to parse $CONFIG_PATH. Install jq first."
-TOKEN="$(jq -r '.token       // empty' "$CONFIG_PATH")"
-SERVER_URL="$(jq -r '.server_url // empty' "$CONFIG_PATH")"
-APP_URL="$(jq   -r '.app_url    // empty' "$CONFIG_PATH")"
-WORKSPACE_ID="$(jq -r '.workspace_id // empty' "$CONFIG_PATH")"
+JQ="jq"
+TOKEN="$($JQ -r '.token       // empty' "$CONFIG_PATH")"
+SERVER_URL="$($JQ -r '.server_url // empty' "$CONFIG_PATH")"
+APP_URL="$($JQ   -r '.app_url    // empty' "$CONFIG_PATH")"
+WORKSPACE_ID="$($JQ -r '.workspace_id // empty' "$CONFIG_PATH")"
 if [[ -n "${MULTICA_TOKEN:-}" ]]; then
   TOKEN="$MULTICA_TOKEN"
 fi
@@ -199,7 +200,7 @@ api_get() {
   local path="$1" outfile="$2"
   local url="$SERVER_URL$path"
   if [[ -n "$WORKSPACE_ID" ]]; then
-    url="$url?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+    url="$url?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   fi
   local args=(
     -sS -o "$outfile" -w "%{http_code}"
@@ -216,7 +217,7 @@ api_put() {
   local path="$1" body="$2" outfile="$3"
   local url="$SERVER_URL$path"
   if [[ -n "$WORKSPACE_ID" ]]; then
-    url="$url?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+    url="$url?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   fi
   local args=(
     -sS -o "$outfile" -w "%{http_code}"
@@ -265,7 +266,7 @@ if [[ -n "$WORKSPACE_ID" ]]; then
   SEG=""
   if command -v multica >/dev/null 2>&1; then
     SEG=$(multica workspace list --output json 2>/dev/null \
-      | jq -r --arg id "$WORKSPACE_ID" '
+      | $JQ -r --arg id "$WORKSPACE_ID" '
           if type == "array" then (.[] | select(.id == $id) | (.slug // .name // empty))
           elif (.workspaces // null) != null then (.workspaces[] | select(.id == $id) | (.slug // .name // empty))
           else empty end
@@ -274,8 +275,8 @@ if [[ -n "$WORKSPACE_ID" ]]; then
   if [[ -z "$SEG" ]]; then
     local_resp="$(curl -sS -H "@$AUTH_HEADER_FILE" \
       "$SERVER_URL/api/workspaces/$WORKSPACE_ID" 2>/dev/null || true)"
-    if [[ -n "$local_resp" ]] && [[ "$(echo "$local_resp" | jq -r '.id // empty')" == "$WORKSPACE_ID" ]]; then
-      SEG="$(echo "$local_resp" | jq -r '.slug // .name // empty')"
+    if [[ -n "$local_resp" ]] && [[ "$(echo "$local_resp" | $JQ -r '.id // empty')" == "$WORKSPACE_ID" ]]; then
+      SEG="$(echo "$local_resp" | $JQ -r '.slug // .name // empty')"
     fi
   fi
   if [[ -n "$SEG" ]]; then
@@ -305,7 +306,7 @@ score_name() {
 }
 pick_best() {
   local name_field="$1" id_field="$2" input="$3" file="$4"
-  jq -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
+  $JQ -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
     [ range(0; length) as $i
       | { idx: $i,
           name: (.[$i][$nfield] // ""),
@@ -345,12 +346,12 @@ fetch_list() {
   local h; h=$(api_get "$path" "$outfile")
   [[ "$h" == "200" ]] || { cat "$outfile" >&2 || true; rm -f "$outfile"; die "GET $path returned HTTP $h"; }
   if [[ -n "$wrapper_key" ]]; then
-    if ! jq -e --arg k "$wrapper_key" '
+    if ! $JQ -e --arg k "$wrapper_key" '
         (type == "object") and ((.[$k] | type) == "array")
       ' "$outfile" >/dev/null 2>&1; then
       die "GET $path 返回的 shape 不是预期包裹对象（缺少 .$wrapper_key 数组）。请查看 $outfile"
     fi
-    jq --arg k "$wrapper_key" '.[$k]' "$outfile" > "$outfile.tmp" && mv "$outfile.tmp" "$outfile"
+    $JQ --arg k "$wrapper_key" '.[$k]' "$outfile" > "$outfile.tmp" && mv "$outfile.tmp" "$outfile"
   fi
 }
 if [[ "$need_squads" == "true" ]]; then fetch_list "/api/squads" "$SQUADS_FILE"; fi
@@ -374,7 +375,7 @@ if [[ -n "$ASSIGNEE_NAME" ]]; then
         ;;
       member)
         if [[ -f "$MEMBERS_FILE" ]]; then
-          found=$(jq -r --arg n "$ASSIGNEE_NAME" '
+          found=$($JQ -r --arg n "$ASSIGNEE_NAME" '
             [ range(0; length) as $i
               | { idx: $i,
                   name: ((.[$i].user // .[$i]).name // ""),
@@ -411,7 +412,7 @@ if [[ -n "$AGENT_NAME" ]]; then
 fi
 if [[ -n "$MEMBER_NAME" ]]; then
   [[ -f "$MEMBERS_FILE" ]] || die "--member requires members list"
-  found=$(jq -r --arg n "$MEMBER_NAME" '
+  found=$($JQ -r --arg n "$MEMBER_NAME" '
     [ range(0; length) as $i
       | { idx: $i,
           name: ((.[$i].user // .[$i]).name // ""),
@@ -441,9 +442,9 @@ fi
 # 用 `with_entries(select(.value != null and .value != ""))` 一次性把空字段去掉。
 BODY_FILE=$TMP_DIR/body.json
 if [[ -n "$RAW_JSON" ]]; then
-  echo "$RAW_JSON" | jq . > "$BODY_FILE" 2>/dev/null || die "--json 传的不是合法 JSON"
+  echo "$RAW_JSON" | $JQ . > "$BODY_FILE" 2>/dev/null || die "--json 传的不是合法 JSON"
 else
-  jq -n \
+  $JQ -n \
     --arg status        "$STATUS" \
     --arg priority      "$PRIORITY" \
     --arg assignee_id   "$ASSIGNEE_ID" \
@@ -464,23 +465,23 @@ else
 fi
 
 BODY="$(cat "$BODY_FILE")"
-KEYS=$(echo "$BODY" | jq -r 'keys | join(",")')
+KEYS=$(echo "$BODY" | $JQ -r 'keys | join(",")')
 [[ -z "$KEYS" || "$KEYS" == "" ]] && die "no field to update. Pass at least one of --status / --priority / --assignee* / --project* / --title / --description / --json"
 
 # ---- 取当前值（diff）----
-CUR_STATUS=$(jq -r '.status // "-"   ' "$ISSUE_FILE")
-CUR_PRIORITY=$(jq -r '.priority // "-"' "$ISSUE_FILE")
-CUR_ASSIGNEE_TYPE=$(jq -r '.assignee_type // "-"' "$ISSUE_FILE")
-CUR_ASSIGNEE_ID=$(jq -r '.assignee_id // "-"' "$ISSUE_FILE")
-CUR_PROJECT_ID=$(jq -r '.project_id // "-"' "$ISSUE_FILE")
-CUR_TITLE=$(jq -r '.title // "-"' "$ISSUE_FILE")
-CUR_DESC_LEN=$(jq -r '.description // "" | length' "$ISSUE_FILE")
+CUR_STATUS=$($JQ -r '.status // "-"   ' "$ISSUE_FILE")
+CUR_PRIORITY=$($JQ -r '.priority // "-"' "$ISSUE_FILE")
+CUR_ASSIGNEE_TYPE=$($JQ -r '.assignee_type // "-"' "$ISSUE_FILE")
+CUR_ASSIGNEE_ID=$($JQ -r '.assignee_id // "-"' "$ISSUE_FILE")
+CUR_PROJECT_ID=$($JQ -r '.project_id // "-"' "$ISSUE_FILE")
+CUR_TITLE=$($JQ -r '.title // "-"' "$ISSUE_FILE")
+CUR_DESC_LEN=$($JQ -r '.description // "" | length' "$ISSUE_FILE")
 
-echo "Target: $(jq -r '"\(.identifier // "?")  (id: \(.id // "?"))"' "$ISSUE_FILE")"
+echo "Target: $($JQ -r '"\(.identifier // "?")  (id: \(.id // "?"))"' "$ISSUE_FILE")"
 echo "Title:  $CUR_TITLE"
 echo
 echo "Pending changes:"
-echo "$BODY" | jq -r '
+echo "$BODY" | $JQ -r '
   to_entries | .[] |
   "  " + .key + ":  →  " +
     (if .key == "status"        then (.value | tostring)
@@ -495,7 +496,7 @@ echo "$BODY" | jq -r '
 '
 echo
 echo "Diff (before → after):"
-echo "$BODY" | jq -r --arg cur_status "$CUR_STATUS" --arg cur_priority "$CUR_PRIORITY" \
+echo "$BODY" | $JQ -r --arg cur_status "$CUR_STATUS" --arg cur_priority "$CUR_PRIORITY" \
                        --arg cur_aid "$CUR_ASSIGNEE_ID" --arg cur_atype "$CUR_ASSIGNEE_TYPE" \
                        --arg cur_pid "$CUR_PROJECT_ID" --arg cur_title "$CUR_TITLE" \
                        --argjson cur_desc_len "$CUR_DESC_LEN" '
@@ -513,7 +514,7 @@ echo "$BODY" | jq -r --arg cur_status "$CUR_STATUS" --arg cur_priority "$CUR_PRI
 
 # status 反向移动警告（done → 其他 / in_review → backlog）
 if [[ -n "$STATUS" ]]; then
-  CUR_STATUS=$(jq -r '.status // ""' "$ISSUE_FILE")
+  CUR_STATUS=$($JQ -r '.status // ""' "$ISSUE_FILE")
   if [[ "$CUR_STATUS" == "done" && "$STATUS" != "done" ]]; then
     echo
     echo "WARN: 正在把 done 工单改回 \"$STATUS\"，请确认确实是要 reopen。"
@@ -526,7 +527,7 @@ fi
 
 echo
 echo "Body:"
-echo "$BODY" | jq .
+echo "$BODY" | $JQ .
 
 # ---- 确认 ----
 if [[ "$DRY_RUN" == "true" ]]; then
@@ -562,10 +563,10 @@ if [[ "$HTTP" != "200" ]]; then
 fi
 
 if [[ "$OUTPUT_JSON" == "true" ]]; then
-  jq --arg app "$APP_URL" --arg seg "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" \
+  $JQ --arg app "$APP_URL" --arg seg "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" \
     '. + {web_url: "\($app)/\($seg)/issues/\(.id)"}' "$RESP"
 else
-  jq -r --arg app "$APP_URL" --arg seg "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" '
+  $JQ -r --arg app "$APP_URL" --arg seg "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" '
     "Identifier:  \(.identifier // "-")  (id: \(.id // "-"))",
     "Title:       \(.title // "-")",
     "Status:      \(.status // "-")",

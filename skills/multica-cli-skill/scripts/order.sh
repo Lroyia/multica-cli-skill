@@ -199,10 +199,11 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 fi
 
 command -v jq >/dev/null 2>&1 || die "jq is required to parse $CONFIG_PATH. Install jq first."
-TOKEN="$(jq -r '.token       // empty' "$CONFIG_PATH")"
-SERVER_URL="$(jq -r '.server_url // empty' "$CONFIG_PATH")"
-APP_URL="$(jq   -r '.app_url    // empty' "$CONFIG_PATH")"
-WORKSPACE_ID="$(jq -r '.workspace_id // empty' "$CONFIG_PATH")"
+JQ="jq"
+TOKEN="$($JQ -r '.token       // empty' "$CONFIG_PATH")"
+SERVER_URL="$($JQ -r '.server_url // empty' "$CONFIG_PATH")"
+APP_URL="$($JQ   -r '.app_url    // empty' "$CONFIG_PATH")"
+WORKSPACE_ID="$($JQ -r '.workspace_id // empty' "$CONFIG_PATH")"
 
 # $MULTICA_TOKEN 总是最高优先级（覆盖 config.json 里的 token）
 if [[ -n "${MULTICA_TOKEN:-}" ]]; then
@@ -227,7 +228,7 @@ api_get() {
   local path="$1" outfile="$2"
   local url="$SERVER_URL$path"
   if [[ -n "$WORKSPACE_ID" ]]; then
-    url="$url?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+    url="$url?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   fi
 
   local args=(
@@ -286,12 +287,12 @@ fetch_list() {
     *) cat "$outfile" >&2 || true; rm -f "$outfile"; die "GET $path returned HTTP $http";;
   esac
   if [[ -n "$wrapper_key" ]]; then
-    if ! jq -e --arg k "$wrapper_key" '
+    if ! $JQ -e --arg k "$wrapper_key" '
         (type == "object") and ((.[$k] | type) == "array")
       ' "$outfile" >/dev/null 2>&1; then
       die "GET $path 返回的 shape 不是预期包裹对象（缺少 .$wrapper_key 数组）。请查看 $outfile"
     fi
-    jq --arg k "$wrapper_key" '.[$k]' "$outfile" > "$outfile.tmp" && mv "$outfile.tmp" "$outfile"
+    $JQ --arg k "$wrapper_key" '.[$k]' "$outfile" > "$outfile.tmp" && mv "$outfile.tmp" "$outfile"
   fi
 }
 
@@ -321,7 +322,7 @@ pick_best() {
   # pick_best <jq_program_for_name> <jq_program_for_id> <input_name> <json_file>
   local name_field="$1" id_field="$2" input="$3" file="$4"
   if [[ "$STRICT_MATCH" == "true" ]]; then
-    jq -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
+    $JQ -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
       [ .[]
         | { name: (.[$nfield] // ""), id: (.[$ifield] // "") }
         | select(.name == $n)
@@ -332,7 +333,7 @@ pick_best() {
         end
     ' "$file" | head -n1
   else
-    jq -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
+    $JQ -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
       [ range(0; length) as $i
         | { idx: $i,
             name: (.[$i][$nfield] // ""),
@@ -373,7 +374,7 @@ resolve_assignee() {
         ;;
       member)
         if [[ -f "$MEMBERS_FILE" ]]; then
-          local id; id=$(jq -r --arg n "$query" '
+          local id; id=$($JQ -r --arg n "$query" '
             [ range(0; length) as $i
               | { idx: $i,
                   name: ((.[$i].user // .[$i]).name // ""),
@@ -440,7 +441,7 @@ if [[ -n "$AGENT_NAME" ]]; then
 fi
 if [[ -n "$MEMBER_NAME" ]]; then
   [[ ! -f "$MEMBERS_FILE" ]] && die "--member requires members list"
-  ID=$(jq -r --arg n "$MEMBER_NAME" '
+  ID=$($JQ -r --arg n "$MEMBER_NAME" '
     [ range(0; length) as $i
       | { idx: $i,
           name: ((.[$i].user // .[$i]).name // ""),
@@ -475,7 +476,7 @@ if [[ -n "$PROJECT_NAME" ]]; then
 fi
 
 # ---- 5) 构造 body ----
-BODY=$(jq -n \
+BODY=$($JQ -n \
   --arg title "$TITLE" \
   --arg description "$DESCRIPTION" \
   --arg priority "$PRIORITY" \
@@ -508,14 +509,14 @@ if [[ "$DRY_RUN" == "true" ]]; then
   echo "==== DRY RUN: would POST $SERVER_URL/api/issues ===="
   echo "Headers: Authorization: Bearer ***, X-Client-Platform: multica-cli-skill, X-Workspace-ID: ${WORKSPACE_ID:-<unset>}"
   echo "Body:"
-  echo "$BODY" | jq .
+  echo "$BODY" | $JQ .
   rm -f "$SQUADS_FILE" "$AGENTS_FILE" "$MEMBERS_FILE" "$PROJECTS_FILE"
   exit 0
 fi
 
 # ---- 6) POST ----
 URL="$SERVER_URL/api/issues"
-[[ -n "$WORKSPACE_ID" ]] && URL="$URL?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+[[ -n "$WORKSPACE_ID" ]] && URL="$URL?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
 
 CURL_ARGS=(
   -sS
@@ -540,11 +541,11 @@ if [[ "$HTTP" != "201" && "$HTTP" != "200" ]]; then
 fi
 
 RESP="$(cat $TMP_DIR/resp.json)"
-ID="$(echo "$RESP" | jq -r '.id')"
-IDENT="$(echo "$RESP" | jq -r '.identifier')"
-WS="$(echo "$RESP" | jq -r '.workspace_id')"
-STATUS_VAL="$(echo "$RESP" | jq -r '.status')"
-PRIORITY_VAL="$(echo "$RESP" | jq -r '.priority')"
+ID="$(echo "$RESP" | $JQ -r '.id')"
+IDENT="$(echo "$RESP" | $JQ -r '.identifier')"
+WS="$(echo "$RESP" | $JQ -r '.workspace_id')"
+STATUS_VAL="$(echo "$RESP" | $JQ -r '.status')"
+PRIORITY_VAL="$(echo "$RESP" | $JQ -r '.priority')"
 
 # 反查 workspace 路径段（slug 优先，回退 name，再不行才回退到 id）。
 # Multica web 路由使用 workspace 的 slug/name，**不**直接用 id；用 id 拼出来的 URL 在浏览器里打不开。
@@ -556,7 +557,7 @@ SLUG=""
 # 1) CLI
 if command -v multica >/dev/null 2>&1 && [[ -n "$WS" ]]; then
   SLUG=$(multica workspace list --output json 2>/dev/null \
-    | jq -r --arg id "$WS" '
+    | $JQ -r --arg id "$WS" '
         if type == "array" then (.[] | select(.id == $id) | (.slug // .name // empty))
         elif (.workspaces // null) != null then (.workspaces[] | select(.id == $id) | (.slug // .name // empty))
         else empty end
@@ -568,8 +569,8 @@ if [[ -z "$SLUG" && -n "$WS" && -n "$TOKEN" && -n "$SERVER_URL" ]]; then
   _WS_RESP="$(curl -sS -H "@$AUTH_HEADER_FILE" \
     -H "X-Client-Platform: multica-cli-skill" \
     "$SERVER_URL/api/workspaces/$WS" 2>/dev/null || true)"
-  if [[ -n "$_WS_RESP" ]] && [[ "$(echo "$_WS_RESP" | jq -r '.id // empty')" == "$WS" ]]; then
-    SLUG="$(echo "$_WS_RESP" | jq -r '.slug // .name // empty')"
+  if [[ -n "$_WS_RESP" ]] && [[ "$(echo "$_WS_RESP" | $JQ -r '.id // empty')" == "$WS" ]]; then
+    SLUG="$(echo "$_WS_RESP" | $JQ -r '.slug // .name // empty')"
   fi
   unset _WS_RESP
 fi
@@ -583,7 +584,7 @@ WEB_URL="$APP_URL/$PATH_SEG/issues/$ID"
 
 # ---- 7) 输出 ----
 if [[ "$OUTPUT_JSON" == "true" ]]; then
-  jq --arg url "$WEB_URL" --arg atype "$ASSIGNEE_TYPE" --arg aid "$ASSIGNEE_ID" --arg pid "$PROJECT_ID" \
+  $JQ --arg url "$WEB_URL" --arg atype "$ASSIGNEE_TYPE" --arg aid "$ASSIGNEE_ID" --arg pid "$PROJECT_ID" \
      --arg config_path "$CONFIG_PATH" \
     '. + {web_url: $url, matched_assignee_type: $atype, matched_assignee_id: $aid, matched_project_id: $pid, config_path: $config_path}' \
     $TMP_DIR/resp.json

@@ -213,10 +213,11 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   die "config file not found: $CONFIG_PATH"
 fi
 command -v jq >/dev/null 2>&1 || die "jq is required to parse $CONFIG_PATH. Install jq first."
-TOKEN="$(jq -r '.token       // empty' "$CONFIG_PATH")"
-SERVER_URL="$(jq -r '.server_url // empty' "$CONFIG_PATH")"
-APP_URL="$(jq   -r '.app_url    // empty' "$CONFIG_PATH")"
-WORKSPACE_ID="$(jq -r '.workspace_id // empty' "$CONFIG_PATH")"
+JQ="jq"
+TOKEN="$($JQ -r '.token       // empty' "$CONFIG_PATH")"
+SERVER_URL="$($JQ -r '.server_url // empty' "$CONFIG_PATH")"
+APP_URL="$($JQ   -r '.app_url    // empty' "$CONFIG_PATH")"
+WORKSPACE_ID="$($JQ -r '.workspace_id // empty' "$CONFIG_PATH")"
 if [[ -n "${MULTICA_TOKEN:-}" ]]; then
   TOKEN="$MULTICA_TOKEN"
 fi
@@ -243,7 +244,7 @@ resolve_workspace_path_seg() {
   # 1) CLI
   if command -v multica >/dev/null 2>&1 && [[ -n "$ws" ]]; then
     seg=$(multica workspace list --output json 2>/dev/null \
-      | jq -r --arg id "$ws" '
+      | $JQ -r --arg id "$ws" '
           if type == "array" then (.[] | select(.id == $id) | (.slug // .name // empty))
           elif (.workspaces // null) != null then (.workspaces[] | select(.id == $id) | (.slug // .name // empty))
           else empty end
@@ -256,8 +257,8 @@ resolve_workspace_path_seg() {
     resp="$(curl -sS -H "@$AUTH_HEADER_FILE" \
       -H "X-Client-Platform: multica-cli-skill" \
       "$SERVER_URL/api/workspaces/$ws" 2>/dev/null || true)"
-    if [[ -n "$resp" ]] && [[ "$(echo "$resp" | jq -r '.id // empty')" == "$ws" ]]; then
-      seg="$(echo "$resp" | jq -r '.slug // .name // empty')"
+    if [[ -n "$resp" ]] && [[ "$(echo "$resp" | $JQ -r '.id // empty')" == "$ws" ]]; then
+      seg="$(echo "$resp" | $JQ -r '.slug // .name // empty')"
     fi
   fi
   if [[ -n "$seg" ]]; then
@@ -294,7 +295,7 @@ score_name() {
 pick_best() {
   local name_field="$1" id_field="$2" input="$3" file="$4"
   if [[ "$STRICT_MATCH" == "true" ]]; then
-    jq -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
+    $JQ -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
       [ .[] | { name: (.[$nfield] // ""), id: (.[$ifield] // "") } | select(.name == $n) ]
       | if length == 0 then empty
         elif length == 1 then .[0].id
@@ -302,7 +303,7 @@ pick_best() {
         end
     ' "$file" | head -n1
   else
-    jq -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
+    $JQ -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
       [ range(0; length) as $i
         | { idx: $i,
             name: (.[$i][$nfield] // ""),
@@ -327,7 +328,7 @@ api_get() {
   local path="$1" outfile="$2"
   local url="$SERVER_URL$path"
   if [[ -n "$WORKSPACE_ID" ]]; then
-    url="$url?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+    url="$url?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   fi
   local args=(
     -sS
@@ -380,10 +381,10 @@ fi
 if [[ "$need_projects" == "true" ]]; then
   H=$(api_get "/api/projects" "$PROJECTS_FILE"); [[ "$H" == "200" ]] || { cat "$PROJECTS_FILE" >&2; rm -f "$PROJECTS_FILE"; die "GET /api/projects HTTP $H"; }
   # /api/projects 返回 {"projects":[...], "total":N}，解包成裸数组供后续 pick_best 使用
-  if ! jq -e '.projects | type == "array"' "$PROJECTS_FILE" >/dev/null 2>&1; then
+  if ! $JQ -e '.projects | type == "array"' "$PROJECTS_FILE" >/dev/null 2>&1; then
     die "GET /api/projects 返回的 shape 不是预期包裹对象（缺少 .projects 数组）。请查看 $PROJECTS_FILE"
   fi
-  jq '.projects' "$PROJECTS_FILE" > "$PROJECTS_FILE.tmp" && mv "$PROJECTS_FILE.tmp" "$PROJECTS_FILE"
+  $JQ '.projects' "$PROJECTS_FILE" > "$PROJECTS_FILE.tmp" && mv "$PROJECTS_FILE.tmp" "$PROJECTS_FILE"
 fi
 
 # 匹配 assignee（squad → agent → member）
@@ -399,7 +400,7 @@ if [[ -n "$ASSIGNEE_NAME" ]]; then
         ;;
       member)
         if [[ -f "$MEMBERS_FILE" ]]; then
-          found=$(jq -r --arg n "$ASSIGNEE_NAME" '
+          found=$($JQ -r --arg n "$ASSIGNEE_NAME" '
             [ range(0; length) as $i
               | { idx: $i,
                   name: ((.[$i].user // .[$i]).name // ""),
@@ -429,7 +430,7 @@ fi
 # 匹配 creator（仅 member）
 if [[ -n "$CREATOR_NAME" ]]; then
   [[ ! -f "$MEMBERS_FILE" ]] && die "--creator requires members list"
-  CREATOR_ID=$(jq -r --arg n "$CREATOR_NAME" '
+  CREATOR_ID=$($JQ -r --arg n "$CREATOR_NAME" '
     [ range(0; length) as $i
       | { idx: $i,
           name: ((.[$i].user // .[$i]).name // ""),
@@ -466,7 +467,7 @@ build_query() {
   local k v
   while IFS='=' read -r k v; do
     [[ -z "$v" ]] && continue
-    v_enc=$(jq -rn --arg x "$v" '$x|@uri')
+    v_enc=$($JQ -rn --arg x "$v" '$x|@uri')
     [[ -n "$qs" ]] && qs+="&"
     qs+="$k=$v_enc"
   done
@@ -496,7 +497,7 @@ QS="${QS#&}"
 # 调对应 endpoint
 fetch_issues() {
   local url="$SERVER_URL/api/issues"
-  [[ -n "$WORKSPACE_ID" ]] && url+="?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+  [[ -n "$WORKSPACE_ID" ]] && url+="?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   [[ -n "$QS" ]] && { [[ -n "$WORKSPACE_ID" ]] && url+="&$QS" || url+="?$QS"; }
 
   local args=(
@@ -514,9 +515,9 @@ fetch_issues() {
 }
 
 fetch_search() {
-  local q_enc=$(jq -rn --arg x "$Q" '$x|@uri')
+  local q_enc=$($JQ -rn --arg x "$Q" '$x|@uri')
   local url="$SERVER_URL/api/issues/search?q=$q_enc"
-  [[ -n "$WORKSPACE_ID" ]] && url+="&workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+  [[ -n "$WORKSPACE_ID" ]] && url+="&workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   [[ "$INCLUDE_CLOSED" == "true" ]] && url+="&include_closed=true"
   [[ -n "$LIMIT"        ]] && url+="&limit=$LIMIT"
   [[ -n "$OFFSET"       ]] && url+="&offset=$OFFSET"
@@ -538,7 +539,7 @@ fetch_search() {
 # 把单个 issue 输出补一个 web_url 字段
 attach_web_url() {
   local json_in="$1" json_out="$2"
-  jq --arg app "$APP_URL" --arg ws "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" '
+  $JQ --arg app "$APP_URL" --arg ws "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" '
     [ .[]? | . + {
         web_url: (
           if .web_url then .web_url
@@ -552,7 +553,7 @@ attach_web_url() {
 # 输出格式：默认对齐列的表格；--json 时给原 JSON + web_url 字段
 render_table() {
   local file="$1"
-  jq -r '
+  $JQ -r '
     ["IDENTIFIER","STATUS","PRIORITY","ASSIGNEE","UPDATED","TITLE"] as $h |
     ($h | @tsv),
     (.[] | [
@@ -573,11 +574,11 @@ render_table() {
 # 这两个开关和 --json / render_table 互斥；后者优先级最高（带 --json 时 count/ids-only 失效）
 print_count() {
   local file="$1"
-  jq 'length' "$file"
+  $JQ 'length' "$file"
 }
 print_ids() {
   local file="$1"
-  jq -r '.[] | (.identifier // "?")' "$file"
+  $JQ -r '.[] | (.identifier // "?")' "$file"
 }
 
 case "$SUBCMD" in
@@ -595,9 +596,9 @@ case "$SUBCMD" in
 
     # 解析为数组（list / search 都返回数组）
     RESP=$TMP_DIR/pretty.json
-    jq '[.issues[]?] | map(select(.id))' $TMP_DIR/resp.json > "$RESP" || true
+    $JQ '[.issues[]?] | map(select(.id))' $TMP_DIR/resp.json > "$RESP" || true
 
-    COUNT=$(jq 'length' "$RESP")
+    COUNT=$($JQ 'length' "$RESP")
     if [[ "$OUTPUT_JSON" == "true" ]]; then
       attach_web_url "$RESP" $TMP_DIR/out.json
       cat $TMP_DIR/out.json
@@ -622,9 +623,9 @@ case "$SUBCMD" in
       die "GET /api/issues/search returned HTTP $HTTP"
     fi
     RESP=$TMP_DIR/pretty.json
-    jq '[.issues[]?] | map(select(.id))' $TMP_DIR/resp.json > "$RESP" || true
+    $JQ '[.issues[]?] | map(select(.id))' $TMP_DIR/resp.json > "$RESP" || true
 
-    COUNT=$(jq 'length' "$RESP")
+    COUNT=$($JQ 'length' "$RESP")
     if [[ "$OUTPUT_JSON" == "true" ]]; then
       attach_web_url "$RESP" $TMP_DIR/out.json
       cat $TMP_DIR/out.json
@@ -653,7 +654,7 @@ case "$SUBCMD" in
     fi
 
     URL="$SERVER_URL/api/issues/$RESOLVED_ID"
-    [[ -n "$WORKSPACE_ID" ]] && URL+="?workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+    [[ -n "$WORKSPACE_ID" ]] && URL+="?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
     HTTP=$(curl -sS -o $TMP_DIR/resp.json -w "%{http_code}" \
       -H "@$AUTH_HEADER_FILE" \
       -H "X-Client-Platform: multica-cli-skill" \
@@ -668,10 +669,10 @@ case "$SUBCMD" in
     fi
 
     if [[ "$OUTPUT_JSON" == "true" ]]; then
-      jq --arg url "$APP_URL/${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}/issues/$(jq -r '.id' $TMP_DIR/resp.json)" \
+      $JQ --arg url "$APP_URL/${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}/issues/$($JQ -r '.id' $TMP_DIR/resp.json)" \
         '. + {web_url: $url}' $TMP_DIR/resp.json
     else
-      jq -r --arg path_seg "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" '
+      $JQ -r --arg path_seg "${WORKSPACE_PATH_SEG:-${WORKSPACE_ID:-}}" '
         "Identifier:  \(.identifier // "-")  (id: \(.id // "-"))",
         "Title:       \(.title // "-")",
         "Status:      \(.status // "-")",

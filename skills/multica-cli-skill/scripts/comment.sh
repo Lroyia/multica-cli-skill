@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# multica-cli-skill / comment.sh — 管 issue 评论（v0.10 新增）
-#
-# 子命令（互斥）:
-#   list       <issue-id-or-uuid> [选项]   列出某 issue 的评论
-#   add        <issue-id-or-uuid> [选项]   在某 issue 上发评论（或回复）
-#   update     <comment-id>         [选项]  编辑评论（仅作者/管理员）
-#   delete     <comment-id>         [选项]  删除评论（仅作者/管理员）
-#   resolve    <comment-id>         [选项]  把评论标记为「线程的解决结论」
-#   unresolve  <comment-id>         [选项]  撤销「解决结论」（重新打开线程）
-#
+# multica-cli-skill / comment.sh �?�?issue 评论（v0.10 新增�?#
+# 子命令（互斥�?
+#   list       <issue-id-or-uuid> [选项]   列出�?issue 的评�?#   add        <issue-id-or-uuid> [选项]   在某 issue 上发评论（或回复�?#   update     <comment-id>         [选项]  编辑评论（仅作�?管理员）
+#   delete     <comment-id>         [选项]  删除评论（仅作�?管理员）
+#   resolve    <comment-id>         [选项]  把评论标记为「线程的解决结论�?#   unresolve  <comment-id>         [选项]  撤销「解决结论」（重新打开线程�?#
 # 设计依据:
 #   - server/internal/handler/comment.go
 #   - server/cmd/server/router.go:
@@ -18,13 +13,13 @@
 #       DELETE /api/comments/{commentId}
 #       POST   /api/comments/{commentId}/resolve
 #       DELETE /api/comments/{commentId}/resolve
-#   - 评论 type 仅允许 client_authorable: "comment" / "progress_update"
-#     （"status_change" 和 "system" 是平台生成的，禁止客户端伪造）
-#   - /note 前缀：评论首 token 是 /note（大小写不敏感）则不会被 agent 触发
+#   - 评论 type 仅允�?client_authorable: "comment" / "progress_update"
+#     �?status_change" �?"system" 是平台生成的，禁止客户端伪造）
+#   - /note 前缀：评论首 token �?/note（大小写不敏感）则不会被 agent 触发
 #
 # 凭证来源（与 order.sh / list.sh / update.sh 完全一致）:
 #   --config > <skill_dir>/config.json > $MULTICA_CLI_ORDER_CONFIG > ~/.multica/config.json
-#   $MULTICA_TOKEN 覆盖 token；--server-url / --app-url / --workspace-id 覆盖对应字段
+#   $MULTICA_TOKEN 覆盖 token�?-server-url / --app-url / --workspace-id 覆盖对应字段
 #
 # 前置依赖: curl, jq, uname
 
@@ -34,59 +29,45 @@ export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}/note;/
 # ---- 帮助 ----
 # usage 块的范围标记 BEGIN_USAGE / END_USAGE，由 usage() 提取
 # BEGIN_USAGE
-# multica-cli-skill / comment.sh — 管 issue 评论（v0.10 新增）
-#
-# 子命令（互斥）:
-#   list       <issue-id-or-uuid> [选项]   列出某 issue 的评论
-#   add        <issue-id-or-uuid> [选项]   在某 issue 上发评论（或回复）
-#   update     <comment-id>         [选项]  编辑评论（仅作者/管理员）
-#   delete     <comment-id>         [选项]  删除评论（仅作者/管理员）
-#   resolve    <comment-id>         [选项]  把评论标记为线程的解决结论
-#   unresolve  <comment-id>         [选项]  撤销解决结论（重新打开线程）
-#
+# multica-cli-skill / comment.sh �?�?issue 评论（v0.10 新增�?#
+# 子命令（互斥�?
+#   list       <issue-id-or-uuid> [选项]   列出�?issue 的评�?#   add        <issue-id-or-uuid> [选项]   在某 issue 上发评论（或回复�?#   update     <comment-id>         [选项]  编辑评论（仅作�?管理员）
+#   delete     <comment-id>         [选项]  删除评论（仅作�?管理员）
+#   resolve    <comment-id>         [选项]  把评论标记为线程的解决结�?#   unresolve  <comment-id>         [选项]  撤销解决结论（重新打开线程�?#
 # 公共选项:
 #   --config <path>           覆盖 config.json 路径
 #   --server-url URL          覆盖 server_url
 #   --app-url URL             覆盖 app_url
 #   --workspace-id UUID       覆盖 workspace_id
-#   --json                    以 JSON 形式输出
+#   --json                    �?JSON 形式输出
 #   --yes / -y                跳过确认（update / delete 默认要确认）
 #   --dry-run                 只打印请求体，不真发请求
 #
 # list 额外选项:
-#   --threads-only            只看顶层评论（roots_only=true）
-#   --summary                 每条 content 截到 200 字（agent 上下文友好）
+#   --threads-only            只看顶层评论（roots_only=true�?#   --summary                 每条 content 截到 200 字（agent 上下文友好）
 #   --fold                    折叠已解决线程到 root + 结论
 #   --since RFC3339           只看该时间之后的评论
-#   --thread <uuid>           看某条线程
-#   --tail N                  线程尾 N 条回复（要 --thread）
-#   --recent N                最近 N 个线程
-#   --limit N                 客户端截到 N 条
-#   --list-type comment|progress_update   按 type 过滤
-#   --hide-resolved           隐藏已 resolve 的评论
-#
+#   --thread <uuid>           看某条线�?#   --tail N                  线程�?N 条回复（�?--thread�?#   --recent N                最�?N 个线�?#   --limit N                 客户端截�?N �?#   --list-type comment|progress_update   �?type 过滤
+#   --hide-resolved           隐藏�?resolve 的评�?#
 # add 额外选项:
-#   --content TEXT            评论正文（必填）；可与 --content-file 拼接
-#   --content-file <path>     从文件读正文（适合多行 / 长 markdown）
-#   --type comment|progress_update      默认 comment
+#   --content TEXT            评论正文（必填）；可�?--content-file 拼接
+#   --content-file <path>     从文件读正文（适合多行 / �?markdown�?#   --type comment|progress_update      默认 comment
 #   --parent-id <uuid>        回复某条评论（构成线程）
-#   --attachment-ids u1,u2,... 关联已上传附件（先用 attachments.sh upload）
-#   --suppress-agent-ids u1,u2,...  本评论不触发这些 agent
-#   --note                    在正文前加 "/note "（不触发任何 agent）
-#
+#   --attachment-ids u1,u2,... 关联已上传附件（先用 attachments.sh upload�?#   --suppress-agent-ids u1,u2,...  本评论不触发这些 agent
+#   --note                    在正文前�?"/note "（不触发任何 agent�?#
 # update 额外选项:
 #   --content TEXT            必填
 #   --content-file <path>     替代 --content
-#   --attachment-ids u1,u2,... 替换附件集合（省略 = 保留原集合）
+#   --attachment-ids u1,u2,... 替换附件集合（省�?= 保留原集合）
 #   --suppress-agent-ids u1,u2,...
 #
 # 示例:
 #   comment.sh list LRO-45
 #   comment.sh list LRO-45 --threads-only --summary
-#   comment.sh add  LRO-45 --content "看一下"
+#   comment.sh add  LRO-45 --content "看一�?
 #   comment.sh add  LRO-45 --content-file ./note.md --note
-#   comment.sh add  LRO-45 --content "我也说一句" --parent-id <comment-uuid>
-#   comment.sh update <comment-uuid> --content "改一下" --yes
+#   comment.sh add  LRO-45 --content "我也说一�? --parent-id <comment-uuid>
+#   comment.sh update <comment-uuid> --content "改一�? --yes
 #   comment.sh delete <comment-uuid> --yes
 #   comment.sh resolve <comment-uuid>
 #   comment.sh unresolve <comment-uuid>
@@ -106,6 +87,7 @@ cleanup() { rm -rf -- "$TMP_DIR"; }
 trap cleanup EXIT INT TERM
 
 command -v jq >/dev/null 2>&1 || die "jq is required. Install jq first."
+JQ="jq"
 
 # 解析脚本所在的 skill 目录
 SKILL_DIR=""
@@ -119,7 +101,7 @@ SKILL_DIR_CONFIG="$SKILL_DIR/config.json"
 # ---- 配置路径解析 ----
 CONFIG_PATH_IS_DEFAULT="false"
 resolve_config_path() {
-  # 1) --config 显式指定（最高优先级）
+  # 1) --config 显式指定（最高优先级
   [[ -n "$CONFIG_PATH" ]] && return
   # 2) <skill_dir>/config.json
   if [[ -f "$SKILL_DIR_CONFIG" ]]; then
@@ -140,7 +122,7 @@ resolve_config_path() {
   CONFIG_PATH_IS_DEFAULT="true"
 }
 
-# ---- 解析子命令 ----
+# ---- 解析子命�?----
 SUBCMD="${1:-}"
 [[ "$SUBCMD" == "-h" || "$SUBCMD" == "--help" || -z "$SUBCMD" ]] && { usage; exit 0; }
 shift
@@ -158,7 +140,7 @@ OUTPUT_JSON="false"
 ASSUME_YES="false"
 DRY_RUN="false"
 
-# ---- 子命令参数 ----
+# ---- 子命令参�?----
 # 通用 positional target
 TARGET=""
 
@@ -171,7 +153,7 @@ LIST_THREAD=""
 LIST_TAIL=""
 LIST_RECENT=""
 LIST_LIMIT=""
-LIST_TYPE_FILTER=""      # comment / progress_update 客户端过滤
+LIST_TYPE_FILTER=""      # comment / progress_update 客户端过
 LIST_HIDE_RESOLVED="false"
 
 # add
@@ -257,10 +239,10 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   fi
   die "config file not found: $CONFIG_PATH"
 fi
-TOKEN="$(jq -r '.token       // empty' "$CONFIG_PATH")"
-SERVER_URL="$(jq -r '.server_url // empty' "$CONFIG_PATH")"
-APP_URL="$(jq   -r '.app_url    // empty' "$CONFIG_PATH")"
-WORKSPACE_ID="$(jq -r '.workspace_id // empty' "$CONFIG_PATH")"
+TOKEN="$($JQ -r '.token       // empty' "$CONFIG_PATH")"
+SERVER_URL="$($JQ -r '.server_url // empty' "$CONFIG_PATH")"
+APP_URL="$($JQ   -r '.app_url    // empty' "$CONFIG_PATH")"
+WORKSPACE_ID="$($JQ -r '.workspace_id // empty' "$CONFIG_PATH")"
 if [[ -n "${MULTICA_TOKEN:-}" ]]; then
   TOKEN="$MULTICA_TOKEN"
 fi
@@ -275,22 +257,17 @@ SERVER_URL="${SERVER_URL%/}"
 AUTH_HEADER_FILE="$TMP_DIR/auth-header"
 printf 'Authorization: Bearer %s\n' "$TOKEN" > "$AUTH_HEADER_FILE"
 
-# 注意：comment.sh 涉及 issue-scoped (/api/issues/{id}/comments) 和
-# comment-scoped (/api/comments/{id}) 两类接口。后者要求 workspace_id 用于
-# 限定 scope（UpdateComment / DeleteComment 内部用 resolveWorkspaceID 从
-# X-Workspace-ID header / query workspace_id 拿）。如果没有 workspace_id，
-# 这些接口会 404 或 403。
-
+# 注意：comment.sh 涉及 issue-scoped (/api/issues/{id}/comments) �?# comment-scoped (/api/comments/{id}) 两类接口。后者要�?workspace_id 用于
+# 限定 scope（UpdateComment / DeleteComment 内部�?resolveWorkspaceID �?# X-Workspace-ID header / query workspace_id 拿）。如果没�?workspace_id�?# 这些接口�?404 �?403�?
 # ---- 2) HTTP 工具 ----
-# 内嵌 args 数组而不是抽公共函数：command substitution + 数组赋值会在 IFS
-# 上拆开带空格的 -H "Authorization: Bearer ..." 这种引号值。
-# 把 workspace_id 拼到 URL 的 query 上，自动用 ? 或 & 分隔
+# 内嵌 args 数组而不是抽公共函数：command substitution + 数组赋值会�?IFS
+# 上拆开带空格的 -H "Authorization: Bearer ..." 这种引号值�?# �?workspace_id 拼到 URL �?query 上，自动�?? �?& 分隔
 append_workspace_id() {
   local url="$1"
   if [[ -n "$WORKSPACE_ID" ]]; then
     local sep="?"
     [[ "$url" == *\?* ]] && sep="&"
-    url="${url}${sep}workspace_id=$(jq -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+    url="${url}${sep}workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
   fi
   echo "$url"
 }
@@ -372,17 +349,17 @@ rm -f $TMP_DIR/me.json
 # ---- 4) 工具 ----
 is_uuid() { [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
 
-# csv → JSON 数组（空 → null）
+# csv �?JSON 数组（空 �?null�?
 csv_to_json_array() {
   local csv="$1"
   if [[ -z "$csv" ]]; then
     echo "null"
   else
-    jq -nc --arg s "$csv" '($s | split(",")) | map(select(. != ""))'
+    $JQ -nc --arg s "$csv" '($s | split(",")) | map(select(. != ""))'
   fi
 }
 
-# 把 "..." 写到 stderr 显示前 80 字
+# �?"..." 写到 stderr 显示�?80 �?
 preview_text() {
   local s="$1"
   local max=80
@@ -394,8 +371,7 @@ preview_text() {
 }
 
 # ============================================================
-# 子命令实现
-# ============================================================
+# 子命令实�?# ============================================================
 
 # ---- list ----
 cmd_list() {
@@ -406,13 +382,13 @@ cmd_list() {
   q+="roots_only=$([[ "$LIST_THREADS_ONLY" == "true" ]] && echo true || echo false)"
   q+="&summary=$([[ "$LIST_SUMMARY" == "true" ]] && echo true || echo false)"
   q+="&fold=$([[ "$LIST_FOLD" == "true" ]] && echo true || echo false)"
-  [[ -n "$LIST_SINCE"   ]] && q+="&since=$(jq -rn --arg v "$LIST_SINCE" '$v|@uri')"
-  [[ -n "$LIST_THREAD"  ]] && q+="&thread=$(jq -rn --arg v "$LIST_THREAD" '$v|@uri')"
-  # tail 必须在 thread 上下文中使用，单独传会 400
+  [[ -n "$LIST_SINCE"   ]] && q+="&since=$($JQ -rn --arg v "$LIST_SINCE" '$v|@uri')"
+  [[ -n "$LIST_THREAD"  ]] && q+="&thread=$($JQ -rn --arg v "$LIST_THREAD" '$v|@uri')"
+  # tail 必须�?thread 上下文中使用，单独传�?400
   [[ -n "$LIST_TAIL"    ]] && q+="&tail=$LIST_TAIL"
   [[ -n "$LIST_RECENT"  ]] && q+="&recent=$LIST_RECENT"
 
-  # 互斥检查
+  # 互斥检
   if [[ "$LIST_FOLD" == "true" && -n "$LIST_SINCE" ]]; then
     die "--fold and --since are mutually exclusive (server-side rule, see server/internal/handler/comment.go)"
   fi
@@ -431,19 +407,19 @@ cmd_list() {
     die "GET /api/issues/$TARGET/comments returned HTTP $HTTP"
   fi
 
-  # 客户端过滤
+  # 客户端过
   local FILTERED="$OUT"
   if [[ -n "$LIST_TYPE_FILTER" ]]; then
     FILTERED="${OUT}.filtered"
-    jq --arg t "$LIST_TYPE_FILTER" '[ .[] | select(.type == $t) ]' "$OUT" > "$FILTERED"
+     $JQ --arg t "$LIST_TYPE_FILTER" '[ .[] | select(.type == $t) ]' "$OUT" > "$FILTERED"
   fi
   if [[ "$LIST_HIDE_RESOLVED" == "true" ]]; then
     local tmp="${FILTERED}.tmp"
-    jq '[ .[] | select(.resolved_at == null) ]' "$FILTERED" > "$tmp" && mv "$tmp" "$FILTERED"
+     $JQ '[ .[] | select(.resolved_at == null) ]' "$FILTERED" > "$tmp" && mv "$tmp" "$FILTERED"
   fi
   if [[ -n "$LIST_LIMIT" ]]; then
     local tmp="${FILTERED}.tmp"
-    jq --argjson n "$LIST_LIMIT" '.[0:$n]' "$FILTERED" > "$tmp" && mv "$tmp" "$FILTERED"
+     $JQ --argjson n "$LIST_LIMIT" '.[0:$n]' "$FILTERED" > "$tmp" && mv "$tmp" "$FILTERED"
   fi
 
   if [[ "$OUTPUT_JSON" == "true" ]]; then
@@ -452,8 +428,8 @@ cmd_list() {
     return
   fi
 
-  # 人话版
-  local COUNT; COUNT=$(jq 'length' "$FILTERED")
+  # 人话
+  local COUNT; COUNT=$($JQ 'length' "$FILTERED")
   echo "Issue: $TARGET"
   echo "Comments: $COUNT"
   echo "---"
@@ -463,7 +439,7 @@ cmd_list() {
   fi
 
   # 按 created_at 升序打印（与 server 默认一致）
-  jq -r '
+  $JQ -r '
     .[] |
     [
       (.id[0:8]),
@@ -499,14 +475,14 @@ cmd_add() {
   fi
   [[ -z "$content" ]] && die "comment content is required: pass --content TEXT or --content-file <path>"
 
-  # --note：把 /note 拼到首 token（大小写不敏感也认）
+  # --note：把 /note 拼到�?token（大小写不敏感也认）
   if [[ "$ADD_NOTE" == "true" ]]; then
     if [[ ! "$content" =~ ^[[:space:]]*/[Nn][Oo][Tt][Ee]([[:space:]]|$) ]]; then
       content="/note ${content}"
     fi
   fi
 
-  # type 白名单
+  # type 白名
   local type="comment"
   if [[ -n "$ADD_TYPE" ]]; then
     case "$ADD_TYPE" in
@@ -516,7 +492,7 @@ cmd_add() {
   fi
 
   local body
-  body=$(jq -n \
+  body=$($JQ -n \
     --arg content "$content" \
     --arg type "$type" \
     --arg parent_id "$ADD_PARENT_ID" \
@@ -534,7 +510,7 @@ cmd_add() {
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "POST /api/issues/$TARGET/comments"
     echo "Body:"
-    echo "$body" | jq .
+    echo "$body" | $JQ .
     return
   fi
 
@@ -553,11 +529,11 @@ cmd_add() {
   fi
 
   local CID AUTHOR CREATED TYPE RESOLVED
-  CID=$(jq -r '.id' "$OUT")
-  AUTHOR=$(jq -r '"\(.author_type[0:1] | ascii_upcase)\(.author_type[1:]):\(.author_id[0:8])"' "$OUT")
-  CREATED=$(jq -r '.created_at' "$OUT")
-  TYPE=$(jq -r '.type' "$OUT")
-  RESOLVED=$(jq -r '.resolved_at // ""' "$OUT")
+  CID=$($JQ -r '.id' "$OUT")
+  AUTHOR=$($JQ -r '"\(.author_type[0:1] | ascii_upcase)\(.author_type[1:]):\(.author_id[0:8])"' "$OUT")
+  CREATED=$($JQ -r '.created_at' "$OUT")
+  TYPE=$($JQ -r '.type' "$OUT")
+  RESOLVED=$($JQ -r '.resolved_at // ""' "$OUT")
   echo "Comment posted."
   echo "  ID:      $CID"
   echo "  Issue:   $TARGET"
@@ -569,10 +545,10 @@ cmd_add() {
 
   # 触发结果（如有）
   local TRIG_COUNT
-  TRIG_COUNT=$(jq -r '.trigger_outcomes | length // 0' "$OUT" 2>/dev/null || echo 0)
+  TRIG_COUNT=$($JQ -r '.trigger_outcomes | length // 0' "$OUT" 2>/dev/null || echo 0)
   if [[ "$TRIG_COUNT" -gt 0 ]]; then
     echo "  Mentions ($TRIG_COUNT):"
-    jq -r '.trigger_outcomes[] | "    - \(.target_type):\(.target_id[0:8]) [\(.status)]" + (if .reason_code != "" then " (\(.reason_code))" else "" end)' "$OUT"
+    $JQ -r '.trigger_outcomes[] | "    - \(.target_type):\(.target_id[0:8]) [\(.status)]" + (if .reason_code != "" then " (\(.reason_code))" else "" end)' "$OUT"
   fi
 
   rm -f "$OUT"
@@ -597,7 +573,7 @@ cmd_update() {
   fi
   [[ -z "$content" ]] && die "comment content is required: pass --content TEXT or --content-file <path>"
 
-  # attachment_ids：缺省 = null（保留原集合）；显式传 "" = 清空
+  # attachment_ids：缺�?= null（保留原集合）；显式�?"" = 清空
   local attachment_ids_json suppress_agent_ids_json
   if [[ -n "$UPDATE_ATTACHMENT_IDS" ]]; then
     attachment_ids_json=$(csv_to_json_array "$UPDATE_ATTACHMENT_IDS")
@@ -607,7 +583,7 @@ cmd_update() {
   suppress_agent_ids_json=$(csv_to_json_array "$UPDATE_SUPPRESS_AGENT_IDS")
 
   local body
-  body=$(jq -n \
+  body=$($JQ -n \
     --arg content "$content" \
     --argjson attachment_ids "$attachment_ids_json" \
     --argjson suppress_agent_ids "$suppress_agent_ids_json" \
@@ -621,11 +597,11 @@ cmd_update() {
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "PUT /api/comments/$TARGET"
     echo "Body:"
-    echo "$body" | jq .
+    echo "$body" | $JQ .
     return
   fi
 
-  # 默认要确认（编辑有副作用：会取消原评论相关 task，重新触发 mentions）
+  # 默认要确认（编辑有副作用：会取消原评论相�?task，重新触�?mentions
   if [[ "$ASSUME_YES" != "true" ]]; then
     echo "About to update comment $TARGET:"
     echo "  New content: $(preview_text "$content")"
@@ -655,17 +631,17 @@ cmd_update() {
   fi
 
   local UPDATED UPDATED_AT
-  UPDATED=$(jq -r '.updated_at' "$OUT")
+  UPDATED=$($JQ -r '.updated_at' "$OUT")
   echo "Comment updated."
   echo "  ID:       $TARGET"
   echo "  Updated:  $UPDATED"
   echo "  Content:  $(preview_text "$content")"
 
   local TRIG_COUNT
-  TRIG_COUNT=$(jq -r '.trigger_outcomes | length // 0' "$OUT" 2>/dev/null || echo 0)
+  TRIG_COUNT=$($JQ -r '.trigger_outcomes | length // 0' "$OUT" 2>/dev/null || echo 0)
   if [[ "$TRIG_COUNT" -gt 0 ]]; then
     echo "  Re-triggered ($TRIG_COUNT):"
-    jq -r '.trigger_outcomes[] | "    - \(.target_type):\(.target_id[0:8]) [\(.status)]" + (if .reason_code != "" then " (\(.reason_code))" else "" end)' "$OUT"
+    $JQ -r '.trigger_outcomes[] | "    - \(.target_type):\(.target_id[0:8]) [\(.status)]" + (if .reason_code != "" then " (\(.reason_code))" else "" end)' "$OUT"
   fi
 
   rm -f "$OUT"
@@ -675,7 +651,7 @@ cmd_update() {
 cmd_delete() {
   [[ -z "$TARGET" ]] && die "usage: comment.sh delete <comment-id> [--yes]"
 
-  # 确认：删除有副作用（cancel tasks, cascade-删除 attachment rows）
+  # 确认：删除有副作用（cancel tasks, cascade-删除 attachment rows
   if [[ "$ASSUME_YES" != "true" ]]; then
     echo "About to DELETE comment $TARGET."
     echo "WARN: author or admin only (403 otherwise). Server will cancel any agent task whose batch contained this comment and remove the comment + its attachments."
@@ -692,7 +668,7 @@ cmd_delete() {
   fi
 
   if [[ "$OUTPUT_JSON" == "true" ]]; then
-    jq -nc --arg id "$TARGET" '{deleted: true, comment_id: $id}'
+    $JQ -nc --arg id "$TARGET" '{deleted: true, comment_id: $id}'
     rm -f "$OUT"
     return
   fi
@@ -705,7 +681,7 @@ cmd_delete() {
 cmd_resolve() {
   [[ -z "$TARGET" ]] && die "usage: comment.sh resolve <comment-id>"
 
-  # 解析路径：comment-scoped，不需要 /api/issues/{id} 前缀
+  # 解析路径：comment-scoped，不需�?/api/issues/{id} 前缀
   local OUT="$TMP_DIR/resolve.json"
   local HTTP
   HTTP=$(api_post "/api/comments/$TARGET/resolve" "{}" "$OUT")
@@ -721,8 +697,8 @@ cmd_resolve() {
   fi
 
   local RESOLVED_AT RESOLVED_BY
-  RESOLVED_AT=$(jq -r '.resolved_at' "$OUT")
-  RESOLVED_BY=$(jq -r '"\(.resolved_by_type // "")\(.resolved_by_id // "" | if . != "" then ":\(.[0:8])" else "" end)"' "$OUT")
+  RESOLVED_AT=$($JQ -r '.resolved_at' "$OUT")
+  RESOLVED_BY=$($JQ -r '"\(.resolved_by_type // "")\(.resolved_by_id // "" | if . != "" then ":\(.[0:8])" else "" end)"' "$OUT")
   echo "Comment resolved: $TARGET"
   echo "  Resolved at: $RESOLVED_AT"
   echo "  Resolved by: $RESOLVED_BY"
