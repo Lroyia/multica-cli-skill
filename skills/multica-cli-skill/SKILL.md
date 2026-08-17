@@ -8,6 +8,8 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 
 默认读取 `multica login` 写入的 `~/.multica/config.json`，直接调用 Multica 后端创建、查询、更新 issue，并管理评论和附件。适合希望复用本机 CLI 登录状态、但需要脚本化 fuzzy match 和完整 API 能力的用户。配置文件仅被读取，不会被本 skill 改写。
 
+> **v0.13 新增**：`order.sh` 支持 `--attachment <path>`（可重复）和 `--attachment-ids <uuid-csv>`，下单时可一次完成"上传附件 + 关联到 issue 的附件列表 + 把图片 markdown 嵌入 description"。默认会把 `![name](markdown_url)` / `!file[name](markdown_url)` 追加到 description 末尾；`--no-embed` 跳过 markdown 追加但保留 attachment_ids。修复了 v0.12 之前的已知 bug：附件上传了但没出现在 issue 附件列表里、description 里也没有图。
+>
 > **v0.12 目录迁移**：本 skill 随 Claude Code 插件市场发布，从仓库根 `SKILL.md` / `scripts/` / `references/` 改为插件规范布局 `skills/multica-cli-skill/{SKILL.md, scripts/, references/}`。脚本里 `SKILL_DIR` 通过 `dirname(dirname(SCRIPT_PATH))` 计算，自动跟随新位置；`<skill_dir>/config.json` 现在指 `skills/multica-cli-skill/config.json`。
 
 > **v0.7 必填收紧**：下单接口（`order.sh`）的必填项现在是 **`--title`** / **`--description`** / **负责人**（`--assignee*` 任一） / **项目**（`--project*` 任一）。状态（`--status`）不传则服务端默认 `todo`（"待办"），与 `server/internal/handler/issue.go` 的 `CreateIssue` 默认行为一致。
@@ -207,6 +209,15 @@ order.sh --title TEXT --description TEXT --assignee ... --project ... [选项]
   --parent-issue-id UUID
   --allow-duplicate
 
+附件（v0.13 新增）:
+  --attachment <path>             可重复；multipart 上传 /api/upload-file，不绑 issue_id，
+                                  上传后得到的 attachment UUID 进 attachment_ids
+  --attachment-ids u1,u2,...      复用已上传的附件（先用 attachments.sh upload 拿 uuid），
+                                  直接进 attachment_ids；元信息会按 markdown_url 嵌入 description
+  --no-embed                      跳过把附件 markdown 追加到 description（attachment_ids 仍生效）
+  默认：所有 snippet 按"上传在前 / 复用在后"的顺序追加到 description 末尾，
+       图片 `![name](markdown_url)`，其他 `!file[name](markdown_url)`。
+
 凭证:
   --config <path>                  显式指定 CLIConfig 文件；缺省查 $MULTICA_CLI_ORDER_CONFIG
                                   再缺省 ~/.multica/config.json
@@ -216,7 +227,8 @@ order.sh --title TEXT --description TEXT --assignee ... --project ... [选项]
   $MULTICA_TOKEN                   覆盖 config 里的 token（CI / 沙箱最常用）
 
 输出:
-  --json                           完整 JSON（含 matched_* + config_path）
+  --json                           完整 JSON（含 matched_* + config_path + embedded_markdown +
+                                          uploaded_attachment_ids + pre_existing_attachment_ids）
   --dry-run                        打印请求体不下单
   --strict-match                   auto-match 只接受完全相同的名字
 ```
@@ -491,6 +503,32 @@ bash scripts/list.sh list --assignee "前端组" --open-only
 bash scripts/list.sh search --q "支付成功率" --limit 10
 bash scripts/list.sh get MUL-123
 
+# 12. 下单 + 上传图片（v0.13：图片会嵌入 description、附件会出现在 issue 附件列表里）
+bash scripts/order.sh \
+  --title "登录页跳转异常" \
+  --description "请看截图" \
+  --assignee "前端组" \
+  --project "支付重构" \
+  --priority high \
+  --attachment ./screenshot.png \
+  --attachment ./network-log.pdf
+
+# 13. 复用已上传的附件（先 attachments.sh upload 拿 uuid，再带 --attachment-ids）
+ATT_IDS=$(bash scripts/attachments.sh upload ./design-spec.pdf --json | jq -r '.id')
+bash scripts/order.sh \
+  --title "支付重构二期" \
+  --description "设计稿见附件" \
+  --assignee "前端组" \
+  --project "支付重构" \
+  --attachment-ids "$ATT_IDS"
+
+# 14. 只要绑定附件，不要嵌图（CI / 自动化场景）
+bash scripts/order.sh \
+  --title "自动告警" --description "见附件" \
+  --assignee "ops-bot" --project "基础设施" \
+  --attachment ./alert.log \
+  --no-embed --json
+
 # 12. 改工单状态（update.sh，默认问确认，--yes 跳过）
 bash scripts/update.sh MUL-123 --status done
 bash scripts/update.sh MUL-123 --priority high --assignee "前端组" --yes
@@ -547,10 +585,10 @@ bash scripts/update.sh MUL-123 --json '{"status":"done"}' --yes  # 透传 body
 
 ## 已知不支持 / 后续扩展
 
-- ❌ 暂不支持 `attachment_ids` 上传流程（需要先调上传接口）。
+- ~~❌ 暂不支持 `attachment_ids` 上传流程（需要先调上传接口）。~~ **已支持（v0.13）**：`order.sh --attachment <path>` 一站式上传；`--attachment-ids <uuid-csv>` 复用已有附件。默认会把图片 markdown 嵌入 description。详见 `order.sh` 子段。
 - ~~❌ 暂不支持 `squad` 作为 `assignee_type`（后端只接受 `member` / `agent`）。~~ **已废除**：2026-07-30 探查后确认 `assignee_type=squad` 被后端接受，`--squad` 命令正常工作。
 - ❌ 没有 idempotency key，重试由调用方负责去重。
 - ❌ `update.sh` 不支持改 `stage`（后端 PUT 不接受；后端设计上应该是单独接口）。
 - ❌ `update.sh` 不能改 `identifier` / `number`（后端静默忽略；应该是有意锁住的，避免和 prefix 冲突）。
-- ✅ 后续可以加：`--attachment <path>` 一站式上传、`--assignee-prefer <type>`、`-i <inbox-file>` 批量、PowerShell 版本、**token 即将过期检测**（如果用临时 PAT，提前 N 天告警）。
+- ✅ 后续可以加：`--assignee-prefer <type>`、`-i <inbox-file>` 批量、PowerShell 版本、**token 即将过期检测**（如果用临时 PAT，提前 N 天告警）。
 - ✅ v0.10 已加：`comment.sh` 完整评论 CRUD（list / add / update / delete / resolve / unresolve）。后续可加：`comment.sh get <comment-id>` 现在只能 `list ... \| jq`，可加客户端单条查询；`comment.sh add --from-file multi-line.md` 现在是 `--content-file` 单一文件，可加 stdin；`comment.sh update --lock-target` 锁定只能在当前评论加 reply 防误删；`comment.sh add --require-author-only` 全局避错保险。

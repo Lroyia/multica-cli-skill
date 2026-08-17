@@ -58,6 +58,7 @@
 | `stage must be >= 1` 错误 | `server/internal/handler/issue.go` | `CreateIssue` 函数内 `if req.Stage != nil && *req.Stage < 1` |
 | `origin_type` / `origin_id` 仅接受 `quick_create`（白名单） | `server/internal/handler/issue.go` | `CreateIssue` 内 `switch *req.OriginType` |
 | `assignee_type` 取值 `member` / `agent`（不含 `squad`） | `server/internal/handler/issue.go` | `validateAssigneePair` |
+| `attachment_ids` 支持（v0.13 起 skill 用） | `server/internal/handler/issue.go` | `CreateIssueRequest.AttachmentIds` 字段；服务端接受 `[uuid]` 并绑定到新建的 issue |
 | Issue 自增 `number` 与 `identifier = prefix-number` | `server/internal/handler/issue.go` | `issueToResponse` 中 `identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))` |
 | 跨 workspace 引用被 `IssueService.Create` 拒 | `server/internal/handler/issue.go` | `CreateIssue` 函数内注释 + `IssueService.Create` 内部跨 workspace 校验 |
 | `POST /api/issues` 内部行为：仅登录用户可创建 | `server/internal/handler/issue.go` | `creatorID, ok := requireUserID(w, r)` |
@@ -171,7 +172,7 @@ printf "Server:  %s\nUser:    %s (%s)\nToken:   %s\n" "$SERVER_URL" "$NAME" "$EM
 
 1. **WebSocket 实时事件**：下单成功后，订阅了 `workspace` scope 的 WebSocket 客户端会收到 `issue:created` 事件；详情见 `server/internal/realtime/...`，与本 skill 无关。
 2. **idempotency**：`POST /api/issues` 没有 idempotency key，重试由调用方负责去重。
-3. **附件上传**：`attachment_ids` 需要先 `POST /api/attachments` 上传文件拿 UUID，再回填到 issue create；本 skill 不内置这个流程。
+3. **附件上传（v0.13 已支持）**：`order.sh` 现在支持 `--attachment <path>`（multipart 上传到 `/api/upload-file`，不绑 issue_id）和 `--attachment-ids <uuid-csv>`（复用已上传的附件）。两者可同时使用；前端无需再手动 `attachments.sh upload + order.sh` 两步。`POST /api/upload-file` 的 `issue_id` 是可选的；服务端会先把附件落库，再通过 `POST /api/issues` body 里的 `attachment_ids` 绑定。`CreateIssueRequest` 接受 `attachment_ids: [uuid]`。
 4. **Web URL 中的 slug**：浏览器 URL 默认走 `<app_url>/<workspace_slug>/issues/<identifier>`；slug 在创建 workspace 时确定，可以 `multica workspace list` 反查。脚本已经做了 best-effort 反查，反查失败回退到用 `workspace_id` 拼路径。
 5. **`assignee_type=squad` 已被验证支持**：2026-07-30 实测 LRO-52 / LRO-54 创建 + 回读均成功，`POST /api/issues` 的 `CreateIssueRequest` 接受 `assignee_type ∈ {member, agent, squad}`。`PUT /api/issues/{id}` 也支持把 assignee 改回 squad。脚本 `--squad "<name>"` 走 `/api/squads` fuzzy match，命中 UUID 直接提交。**历史误解已废除**（v0.8 之前曾警告「服务 不支持 squad」）。
 

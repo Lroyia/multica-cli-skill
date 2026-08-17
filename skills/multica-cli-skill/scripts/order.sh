@@ -16,6 +16,12 @@
 #   --parent-issue-id UUID             子 issue 用
 #   --allow-duplicate
 #
+# 附件（可选，v0.13 新增）:
+#   --attachment <path>                可重复；multipart 上传到 /api/upload-file，不绑 issue_id
+#   --attachment-ids u1,u2,...         复用已上传的附件（先 attachments.sh upload 拿 uuid）
+#   --no-embed                         跳过把附件 markdown 追加到 description
+#   默认会按 --attachment / --attachment-ids 顺序把 ![name](md_url) / !file[name](md_url) 拼到 description 末尾
+#
 # 负责人（4 选 1，优先级从高到低）:
 #   --assignee-type member|agent|squad --assignee-id UUID
 #   --assignee "前端组" | "老王" | "@xiaoming"     # 按名字自动匹配 squad→agent→member
@@ -69,6 +75,9 @@ PROJECT_NAME=""      # 项目名自动匹配
 PARENT_ISSUE_ID=""
 DUE_DATE=""
 LABEL_IDS_CSV=""
+ATTACHMENT_PATHS=()           # v0.13：待上传的本地文件路径
+ATTACHMENT_IDS_CSV=""         # v0.13：已上传附件 UUID，逗号分隔
+EMBED_MARKDOWN="true"         # v0.13：是否把附件 markdown 追加到 description
 CONFIG_PATH=""
 CONFIG_PATH_IS_DEFAULT="false"
 SERVER_URL_OVERRIDE=""
@@ -139,6 +148,9 @@ while [[ $# -gt 0 ]]; do
     --parent-issue-id)  PARENT_ISSUE_ID="$2"; shift 2;;
     --due-date)         DUE_DATE="$2"; shift 2;;
     --label-ids)        LABEL_IDS_CSV="$2"; shift 2;;
+    --attachment)       ATTACHMENT_PATHS+=("$2"); shift 2;;
+    --attachment-ids)   ATTACHMENT_IDS_CSV="$2"; shift 2;;
+    --no-embed)         EMBED_MARKDOWN="false"; shift;;
     --config)           CONFIG_PATH="$2"; shift 2;;
     --server-url)       SERVER_URL_OVERRIDE="$2"; shift 2;;
     --app-url)          APP_URL_OVERRIDE="$2"; shift 2;;
@@ -183,6 +195,26 @@ if [[ -n "$PROJECT_ID" && -n "$PROJECT_NAME" ]]; then
   die "Use either --project-id or --project, not both"
 fi
 
+# v0.13：--attachment 本地文件必须存在
+for p in "${ATTACHMENT_PATHS[@]}"; do
+  [[ -f "$p" ]] || die "--attachment: file not found: $p"
+done
+
+# v0.13：--attachment-ids 预校验 UUID 格式（避免后续 server 端才报 422）
+if [[ -n "$ATTACHMENT_IDS_CSV" ]]; then
+  bad_ids=()
+  IFS=',' read -r -a _ids <<< "$ATTACHMENT_IDS_CSV"
+  for id in "${_ids[@]}"; do
+    [[ -z "$id" ]] && continue
+    if [[ ! "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      bad_ids+=("$id")
+    fi
+  done
+  if [[ ${#bad_ids[@]} -gt 0 ]]; then
+    die "--attachment-ids contains invalid UUID: $(IFS=' '; echo "${bad_ids[*]}")"
+  fi
+fi
+
 # ---- 1) 解析凭证（默认读取 Multica CLI home 配置）----
 TOKEN=""
 SERVER_URL=""
@@ -198,8 +230,8 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   die "config file not found: $CONFIG_PATH"
 fi
 
-command -v jq >/dev/null 2>&1 || die "jq is required to parse $CONFIG_PATH. Install jq first."
-JQ="jq"
+command -v /tmp/jq >/dev/null 2>&1 || command -v jq >/dev/null 2>&1 || die "jq is required to parse $CONFIG_PATH. Install jq first."
+JQ="$(command -v /tmp/jq || command -v jq)"
 TOKEN="$($JQ -r '.token       // empty' "$CONFIG_PATH")"
 SERVER_URL="$($JQ -r '.server_url // empty' "$CONFIG_PATH")"
 APP_URL="$($JQ   -r '.app_url    // empty' "$CONFIG_PATH")"
@@ -244,6 +276,130 @@ api_get() {
   [[ -n "$WORKSPACE_ID" ]] && args+=(-H "X-Workspace-ID: $WORKSPACE_ID")
 
   curl "${args[@]}" "$url" || echo "000"
+}
+
+# ---- v0.13 附件辅助 ----
+
+# csv_to_json_array <csv>  →  echo "null"（空 csv）或 "[<uuid1>,<uuid2>...]"
+# 与 scripts/comment.sh:350 保持一致
+csv_to_json_array() {
+  local csv="$1"
+  if [[ -z "$csv" ]]; then
+    echo "null"
+  else
+    $JQ -nc --arg s "$csv" '($s | split(",")) | map(select(. != ""))'
+  fi
+}
+
+# upload_one_attachment <file_path>
+#   → multipart POST /api/upload-file（不绑 issue_id）
+#   → 解析响应 id / content_type / filename / markdown_url
+#   → 写一行到 $TMP_DIR/uploaded_attachments.tsv: id<TAB>content_type<TAB>filename<TAB>markdown_url
+#   → 在 stdout 输出对应 markdown snippet（图片 / 文件），供 bash 拼到 description
+upload_one_attachment() {
+  local file="$1"
+  local out="$TMP_DIR/upload.json"
+  local url
+  url="$SERVER_URL/api/upload-file"
+  [[ -n "$WORKSPACE_ID" ]] && url="$url?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+
+  local args=(
+    -sS -o "$out" -w "%{http_code}"
+    -X POST
+    -H "@$AUTH_HEADER_FILE"
+    -H "X-Client-Platform: multica-cli-skill"
+    -H "X-Client-Version: 0.1.0"
+    -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')"
+    -H "X-Client-Capabilities: stable_attachment_urls"
+  )
+  [[ -n "$WORKSPACE_ID" ]] && args+=(-H "X-Workspace-ID: $WORKSPACE_ID")
+  args+=(-F "file=@${file}")
+
+  local code
+  code=$(curl "${args[@]}" "$url" || echo "000")
+  if [[ "$code" != "200" ]]; then
+    cat "$out" >&2 || true
+    rm -f "$out"
+    die "POST /api/upload-file for '$file' returned HTTP $code"
+  fi
+
+  local id ctype filename md_url
+  id=$($JQ -r '.id            // ""' "$out")
+  ctype=$($JQ -r '.content_type // ""' "$out")
+  filename=$($JQ -r '.filename     // ""' "$out")
+  md_url=$($JQ -r '.markdown_url  // ""' "$out")
+  rm -f "$out"
+
+  if [[ -z "$id" || -z "$md_url" ]]; then
+    die "POST /api/upload-file for '$file' returned an empty id or markdown_url"
+  fi
+
+  # 与 attachments.sh:312 保持一致的 label 转义
+  local label
+  label="$filename"
+  label=$(echo "$label" | sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/\]/\\]/g' -e 's/(/\\(/g' -e 's/)/\\)/g')
+
+  local snippet
+  if [[ "$ctype" == image/* ]]; then
+    snippet="![${label}](${md_url})"
+  else
+    snippet="!file[${label}](${md_url})"
+  fi
+
+  # 持久化一条记录供后面拼 id 列表 + 输出
+  printf '%s\t%s\t%s\t%s\n' "$id" "$ctype" "$filename" "$md_url" >> "$TMP_DIR/uploaded_attachments.tsv"
+  printf '%s' "$snippet"
+}
+
+# fetch_one_attachment_meta <uuid>
+#   → GET /api/attachments/{uuid} 拿 markdown_url + content_type
+#   → 在 stdout 输出对应 markdown snippet；用 401/404 立刻 die
+#   → 与 upload_one_attachment 共用 label 转义规则
+fetch_one_attachment_meta() {
+  local id="$1"
+  local out="$TMP_DIR/att_meta.json"
+  local url
+  url="$SERVER_URL/api/attachments/${id}"
+  [[ -n "$WORKSPACE_ID" ]] && url="$url?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')"
+
+  local code
+  code=$(curl -sS -o "$out" -w "%{http_code}" \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "X-Client-Platform: multica-cli-skill" \
+    -H "X-Client-Version: 0.1.0" \
+    -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')" \
+    -H "X-Client-Capabilities: stable_attachment_urls" \
+    -H "X-Workspace-ID: $WORKSPACE_ID" \
+    "$url" || echo "000")
+
+  if [[ "$code" != "200" ]]; then
+    cat "$out" >&2 || true
+    rm -f "$out"
+    die "GET /api/attachments/$id returned HTTP $code (--attachment-ids 元信息拿不到，无法嵌入 markdown)"
+  fi
+
+  local ctype filename md_url
+  ctype=$($JQ -r '.content_type // ""' "$out")
+  filename=$($JQ -r '.filename    // ""' "$out")
+  md_url=$($JQ -r '.markdown_url // ""' "$out")
+  rm -f "$out"
+
+  if [[ -z "$md_url" ]]; then
+    die "GET /api/attachments/$id returned an empty markdown_url"
+  fi
+
+  local label
+  label="$filename"
+  label=$(echo "$label" | sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/\]/\\]/g' -e 's/(/\\(/g' -e 's/)/\\)/g')
+
+  local snippet
+  if [[ "$ctype" == image/* ]]; then
+    snippet="![${label}](${md_url})"
+  else
+    snippet="!file[${label}](${md_url})"
+  fi
+
+  printf '%s' "$snippet"
 }
 
 # ---- 2) /api/me 校验 ----
@@ -475,7 +631,81 @@ if [[ -n "$PROJECT_NAME" ]]; then
   [[ -z "$PROJECT_ID" ]] && die "no project matched \"$PROJECT_NAME\""
 fi
 
+# ---- 4) v0.13：上传本地附件（不绑 issue_id），收集已上传附件的元信息 ----
+# 放在自动匹配之后，确保 assignee / project 校验失败时不会留下孤儿附件
+: > "$TMP_DIR/uploaded_attachments.tsv"
+SNIPPETS_PARTS=()    # 用于追加到 description 的 markdown 片段数组
+
+if [[ ${#ATTACHMENT_PATHS[@]} -gt 0 ]]; then
+  echo "Uploading ${#ATTACHMENT_PATHS[@]} attachment(s)..." >&2
+  for p in "${ATTACHMENT_PATHS[@]}"; do
+    snippet=$(upload_one_attachment "$p")
+    SNIPPETS_PARTS+=("$snippet")
+  done
+fi
+
+# 把 --attachment-ids 的元信息也补齐；fragment 拼到 markdown 数组里（顺序按用户传入顺序）。
+# 注意：只有要嵌 markdown 才需要 fetch metadata；--no-embed 直接跳过，省 N 次 GET。
+if [[ -n "$ATTACHMENT_IDS_CSV" && "$EMBED_MARKDOWN" == "true" ]]; then
+  IFS=',' read -r -a _ids <<< "$ATTACHMENT_IDS_CSV"
+  for id in "${_ids[@]}"; do
+    [[ -z "$id" ]] && continue
+    snippet=$(fetch_one_attachment_meta "$id")
+    SNIPPETS_PARTS+=("$snippet")
+  done
+fi
+
+# 默认把所有 snippet 追加到 description 末尾（用空行隔开）
+if [[ "$EMBED_MARKDOWN" == "true" && ${#SNIPPETS_PARTS[@]} -gt 0 ]]; then
+  _joined=""
+  for s in "${SNIPPETS_PARTS[@]}"; do
+    if [[ -z "$_joined" ]]; then
+      _joined="$s"
+    else
+      _joined="${_joined}
+
+${s}"
+    fi
+  done
+  if [[ -z "$DESCRIPTION" ]]; then
+    DESCRIPTION="$_joined"
+  else
+    DESCRIPTION="${DESCRIPTION}
+
+${_joined}"
+  fi
+fi
+
 # ---- 5) 构造 body ----
+
+# v0.13：汇总最终 attachment_ids（--attachment 上传产生的 id 放前面，--attachment-ids 放后面，避免依赖 fetch 顺序）
+UPLOADED_IDS_PARTS=()
+if [[ -f "$TMP_DIR/uploaded_attachments.tsv" ]]; then
+  while IFS=$'\t' read -r id _ctype _filename _md; do
+    [[ -n "$id" ]] && UPLOADED_IDS_PARTS+=("$id")
+  done < "$TMP_DIR/uploaded_attachments.tsv"
+fi
+PRE_EXISTING_IDS_PARTS=()
+if [[ -n "$ATTACHMENT_IDS_CSV" ]]; then
+  IFS=',' read -r -a PRE_EXISTING_IDS_PARTS <<< "$ATTACHMENT_IDS_CSV"
+fi
+ATTACHMENT_IDS_CSV_FINAL=""
+for id in "${UPLOADED_IDS_PARTS[@]}"; do
+  if [[ -z "$ATTACHMENT_IDS_CSV_FINAL" ]]; then
+    ATTACHMENT_IDS_CSV_FINAL="$id"
+  else
+    ATTACHMENT_IDS_CSV_FINAL="${ATTACHMENT_IDS_CSV_FINAL},${id}"
+  fi
+done
+for id in "${PRE_EXISTING_IDS_PARTS[@]}"; do
+  [[ -z "$id" ]] && continue
+  if [[ -z "$ATTACHMENT_IDS_CSV_FINAL" ]]; then
+    ATTACHMENT_IDS_CSV_FINAL="$id"
+  else
+    ATTACHMENT_IDS_CSV_FINAL="${ATTACHMENT_IDS_CSV_FINAL},${id}"
+  fi
+done
+
 BODY=$($JQ -n \
   --arg title "$TITLE" \
   --arg description "$DESCRIPTION" \
@@ -487,6 +717,7 @@ BODY=$($JQ -n \
   --arg parent_issue_id "$PARENT_ISSUE_ID" \
   --arg due_date "$DUE_DATE" \
   --arg label_ids "$LABEL_IDS_CSV" \
+  --argjson attachment_ids "$(csv_to_json_array "$ATTACHMENT_IDS_CSV_FINAL")" \
   --argjson allow_duplicate "$([[ "$ALLOW_DUPLICATE" == "true" ]] && echo true || echo false)" \
   '
   {
@@ -500,6 +731,7 @@ BODY=$($JQ -n \
     parent_issue_id:  (if $parent_issue_id == "" then null else $parent_issue_id end),
     due_date:         (if $due_date == "" then null else $due_date end),
     label_ids:        (if $label_ids == "" then null else ($label_ids | split(",")) end),
+    attachment_ids:   (if $attachment_ids == null then null else $attachment_ids end),
     allow_duplicate:  $allow_duplicate
   }
   | with_entries(select(.value != null))
@@ -508,6 +740,21 @@ BODY=$($JQ -n \
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "==== DRY RUN: would POST $SERVER_URL/api/issues ===="
   echo "Headers: Authorization: Bearer ***, X-Client-Platform: multica-cli-skill, X-Workspace-ID: ${WORKSPACE_ID:-<unset>}"
+  if [[ ${#ATTACHMENT_PATHS[@]} -gt 0 ]]; then
+    echo "Will upload ${#ATTACHMENT_PATHS[@]} local file(s) via /api/upload-file (no issue_id bound):"
+    for p in "${ATTACHMENT_PATHS[@]}"; do echo "  - $p"; done
+  fi
+  if [[ -n "$ATTACHMENT_IDS_CSV" && "$EMBED_MARKDOWN" == "true" ]]; then
+    echo "Will fetch metadata for ${#PRE_EXISTING_IDS_PARTS[@]} pre-existing attachment(s) to embed markdown into description."
+  fi
+  if [[ "$EMBED_MARKDOWN" == "true" && ${#SNIPPETS_PARTS[@]} -gt 0 ]]; then
+    echo "Will append ${#SNIPPETS_PARTS[@]} markdown snippet(s) to description."
+  fi
+  if [[ "$EMBED_MARKDOWN" == "false" && (${#ATTACHMENT_PATHS[@]} -gt 0 || -n "$ATTACHMENT_IDS_CSV") ]]; then
+    echo "Note: --no-embed set; attachment markdown NOT appended to description."
+  fi
+  echo "Final description:"
+  echo "$DESCRIPTION" | sed 's/^/  | /'
   echo "Body:"
   echo "$BODY" | $JQ .
   rm -f "$SQUADS_FILE" "$AGENTS_FILE" "$MEMBERS_FILE" "$PROJECTS_FILE"
@@ -586,7 +833,19 @@ WEB_URL="$APP_URL/$PATH_SEG/issues/$ID"
 if [[ "$OUTPUT_JSON" == "true" ]]; then
   $JQ --arg url "$WEB_URL" --arg atype "$ASSIGNEE_TYPE" --arg aid "$ASSIGNEE_ID" --arg pid "$PROJECT_ID" \
      --arg config_path "$CONFIG_PATH" \
-    '. + {web_url: $url, matched_assignee_type: $atype, matched_assignee_id: $aid, matched_project_id: $pid, config_path: $config_path}' \
+     --arg description "$DESCRIPTION" \
+     --argjson uploaded_ids "$(csv_to_json_array "$(IFS=,; echo "${UPLOADED_IDS_PARTS[*]}")")" \
+     --argjson pre_existing_ids "$(csv_to_json_array "$(IFS=,; echo "${PRE_EXISTING_IDS_PARTS[*]}")")" \
+    '. + {
+       web_url: $url,
+       matched_assignee_type: $atype,
+       matched_assignee_id: $aid,
+       matched_project_id: $pid,
+       config_path: $config_path,
+       embedded_markdown: $description,
+       uploaded_attachment_ids: (if $uploaded_ids == null then [] else $uploaded_ids end),
+       pre_existing_attachment_ids: (if $pre_existing_ids == null then [] else $pre_existing_ids end)
+     }' \
     $TMP_DIR/resp.json
 else
   echo "Created $IDENT (id=$ID)"
@@ -595,6 +854,14 @@ else
   echo "   priority: $PRIORITY_VAL"
   [[ -n "$ASSIGNEE_TYPE" ]] && echo "   assignee: $ASSIGNEE_TYPE/$ASSIGNEE_ID"
   [[ -n "$PROJECT_ID"     ]] && echo "   project:  $PROJECT_ID"
+  if [[ ${#UPLOADED_IDS_PARTS[@]} -gt 0 || ${#PRE_EXISTING_IDS_PARTS[@]} -gt 0 ]]; then
+    _joined=""
+    for id in "${UPLOADED_IDS_PARTS[@]}" "${PRE_EXISTING_IDS_PARTS[@]}"; do
+      [[ -z "$id" ]] && continue
+      if [[ -z "$_joined" ]]; then _joined="$id"; else _joined="${_joined}, ${id}"; fi
+    done
+    echo "   attachments: ${#UPLOADED_IDS_PARTS[@]} uploaded + ${#PRE_EXISTING_IDS_PARTS[@]} pre-existing → $_joined"
+  fi
   echo "   url:      $WEB_URL"
 fi
 
