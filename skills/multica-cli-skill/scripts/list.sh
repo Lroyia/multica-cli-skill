@@ -293,10 +293,24 @@ score_name() {
 }
 
 pick_best() {
+  # 打分规则 (取 name_score / id_score 最大值):
+  #   name_score: 完全相同 100 / 大小写无关完全相同 90 / 大小写无关子串 70 / 去分隔符子串 50
+  #   id_score  : 大小写无关精确匹配 95 / 大小写无关前缀匹配 80
+  #   最终取两者 max;name 命中始终优于 id 命中;同分取列表靠前
+  # 之所以加 id 匹配:agent 在 list 输出里看到的 squad/af3947f3 是 UUID 前缀,直接
+  # 传给 --squad / --assignee 时原来会因"找不到 name='af3947f3'"而 die。
   local name_field="$1" id_field="$2" input="$3" file="$4"
   if [[ "$STRICT_MATCH" == "true" ]]; then
     $JQ -r --arg n "$input" --arg nfield "$name_field" --arg ifield "$id_field" '
-      [ .[] | { name: (.[$nfield] // ""), id: (.[$ifield] // "") } | select(.name == $n) ]
+      [ .[]
+        | { name: (.[$nfield] // ""), id: (.[$ifield] // "") }
+        | .score =
+            ( if .name == $n then 100
+              elif (.id | ascii_downcase) == ($n | ascii_downcase) then 95
+              else 0
+              end )
+        | select(.score > 0)
+      ]
       | if length == 0 then empty
         elif length == 1 then .[0].id
         else error("ambiguous strict match: \(length) entries named \"\($n)\"") | empty
@@ -308,13 +322,19 @@ pick_best() {
         | { idx: $i,
             name: (.[$i][$nfield] // ""),
             id:   (.[$i][$ifield] // "") }
-        | .score =
+        | .name_score =
             ( if .name == $n then 100
               elif (.name | ascii_downcase) == ($n | ascii_downcase) then 90
               elif (.name | ascii_downcase | test($n | ascii_downcase)) then 70
               elif ((.name | ascii_downcase | gsub("[ \\-_]"; "")) | test($n | ascii_downcase | gsub("[ \\-_]"; ""))) then 50
               else 0
               end )
+        | .id_score =
+            ( if (.id | ascii_downcase) == ($n | ascii_downcase) then 95
+              elif ($n | length) >= 4 and (.id | ascii_downcase | startswith($n | ascii_downcase)) then 80
+              else 0
+              end )
+        | .score = (if .name_score > .id_score then .name_score else .id_score end)
         | select(.score > 0)
       ]
       | sort_by(-.score, .idx)
