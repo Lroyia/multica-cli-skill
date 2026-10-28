@@ -141,11 +141,17 @@ if [[ "$HTTP" != "200" ]]; then
   die "GET /api/issue-statuses returned HTTP $HTTP"
 fi
 
-# 响应是裸数组 []IssueStatusResponse：
-#   id / workspace_id / key / name / description / category / color / icon /
-#   is_system / position / archived_at / created_at / updated_at
-if ! $JQ -e 'type == "array"' "$TMP_DIR/resp.json" >/dev/null 2>&1; then
-  die "GET /api/issue-statuses returned an unexpected shape (expected a bare array)"
+# 服务端可能返回两种形状：
+#   1) 裸数组 []IssueStatusResponse（脚本原始假设，multica v0.7.x）
+#   2) 包裹对象 {"categories":[...], "statuses":[...]}（部分部署版本）
+# 统一解包成裸数组再往下走。
+if $JQ -e 'type == "array"' "$TMP_DIR/resp.json" >/dev/null 2>&1; then
+  :
+elif $JQ -e '.statuses | type == "array"' "$TMP_DIR/resp.json" >/dev/null 2>&1; then
+  $JQ '.statuses' "$TMP_DIR/resp.json" > "$TMP_DIR/resp.unwrapped" \
+    && mv "$TMP_DIR/resp.unwrapped" "$TMP_DIR/resp.json"
+else
+  die "GET /api/issue-statuses returned an unexpected shape (expected a bare array or {\"statuses\":[...]})"
 fi
 
 case "$SUBCMD" in
