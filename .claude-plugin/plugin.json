@@ -1,7 +1,7 @@
 {
   "name": "multica-cli-skill",
-  "version": "0.11.0",
-  "description": "Reuse the user's existing Multica CLI login (~/.multica/config.json) to create, query, and update Multica issues and manage comments and attachments via Bash + curl + jq. Fuzzy-matches assignees and projects by name. Works on Windows Git Bash, macOS, and Linux.",
+  "version": "0.13.0",
+  "description": "Reuse the user's existing Multica CLI login (~/.multica/config.json) to create, query, and update Multica issues and manage comments, attachments, statuses, and project workflows via Bash + curl + jq. Fuzzy-matches assignees and projects by name. Aligned with Multica v0.7.x (custom statuses, project workflows, attachment download). Works on Windows Git Bash, macOS, and Linux.",
   "author": {
     "name": "Lroyia"
   },

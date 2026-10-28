@@ -4,13 +4,13 @@
     "name": "Lroyia"
   },
   "metadata": {
-    "description": "Multica CLI Skill marketplace — wrap the user's existing `multica login` config to script issue creation, query, update, comments, and attachments with Bash + curl + jq.",
+    "description": "Multica CLI Skill marketplace — wrap the user's existing `multica login` config to script issue creation, query, update, comments, attachments, statuses, and project workflows with Bash + curl + jq.",
     "homepage": "https://github.com/Lroyia/multica-cli-skill"
   },
   "plugins": [
     {
       "name": "multica-cli-skill",
-      "description": "Reuse the user's existing Multica CLI login (~/.multica/config.json) to create, query, and update Multica issues and manage comments and attachments via Bash + curl + jq. Fuzzy-matches assignees and projects by name. Works on Windows Git Bash, macOS, and Linux.",
+      "description": "Reuse the user's existing Multica CLI login (~/.multica/config.json) to create, query, and update Multica issues and manage comments, attachments, statuses, and project workflows via Bash + curl + jq. Fuzzy-matches assignees and projects by name. Aligned with Multica v0.7.x (custom statuses, project workflows, attachment download). Works on Windows Git Bash, macOS, and Linux.",
       "author": {
         "name": "Lroyia"
       },
@@ -25,10 +25,11 @@
         "issue",
         "project-management",
         "fuzzy-match",
+        "workflow",
         "curl",
         "cli"
       ],
-      "version": "0.11.0",
+      "version": "0.13.0",
       "source": {
         "source": "git",
         "url": "https://github.com/Lroyia/multica-cli-skill.git",

@@ -210,3 +210,57 @@ printf "Server:  %s\nUser:    %s (%s)\nToken:   %s\n" "$SERVER_URL" "$NAME" "$EM
 | **CommentTriggerOutcome** | `server/internal/handler/comment.go` | `type CommentTriggerOutcome struct`（第 79 行）：`target_type` / `target_id` / `status` / `reason_code`——每个 @agent / @squad mention 的触发结果。blocked 不会让请求失败 |
 
 **注释**：multica 平时还有路 `GET /api/issues/{id}/timeline`（`activity.go`），返回 comments + activities 合并的全量时间线。本 skill 不实现 timeline 接口（调用方一般拿 `list --summary` 就够）；需要提及 timeline 原始 events 时，直接调 `GET /api/issues/{id}/timeline` 即可，与 `comment.sh` 互补。
+
+## Issue 状态目录（v0.13 新增 `status.sh`，MUL-6243 / MUL-6749）
+
+multica v0.7.x：`status` 列的枚举 CHECK 已被迁移 337 删除，写路径按 workspace 状态目录解析。
+
+| 结论 | 源码位置 | 关键行 / 关键字段 |
+| --- | --- | --- |
+| `GET /api/issue-statuses` 路由（`include_archived` query） | `server/cmd/server/router.go` | `/api/issue-statuses` 路由块：GET `/`、POST `/`、PATCH `/reorder`、PATCH `/{id}`、DELETE `/{id}`（归档） |
+| `ListIssueStatuses` handler（读：任何成员；写：owner/admin） | `server/internal/handler/issue_status.go` | `func (h *Handler) ListIssueStatuses`（第 98 行起）；读前 `issuestatus.Ensure` 自愈种子（第 112 行） |
+| `IssueStatusResponse` schema | `server/internal/handler/issue_status.go` | `type IssueStatusResponse struct`（第 29 行起）：`id` / `workspace_id` / `key` / `name` / `description` / `category` / `color` / `icon` / `is_system` / `position` / `archived_at` / `created_at` / `updated_at` |
+| 响应是**裸数组**（显示顺序） | `server/internal/handler/issue_status.go` | `writeJSON(w, http.StatusOK, entries)` |
+| **status 解析规则（写路径）** | `server/internal/issuestatus/issuestatus.go` | `func Resolve`（第 473 行起）：`strings.ToLower(strings.TrimSpace(status))` → 按 key 查目录；内建 7 个无行也放行（fail-open 仅限历史合法集）；归档自定义 key → `ErrUnknownStatus` |
+| 内建 7 个 key 永远可用 | `server/internal/issuestatus/issuestatus.go` | `IsBuiltIn`（第 107 行）；`canonicalOrder` |
+| 未知 status 的报错带**名字标签** | `server/internal/handler/issue.go` | `resolveIssueStatusKeyKind`（第 186 行起）→ `ActiveKeyLabels`（issuestatus.go 第 548 行起）：`invalid status "X"; valid values: todo, in_review_2 (Waiting Review), ...`（自定义 key 附 `(Name)`，MUL-6749） |
+| 归档竞态守卫 | `server/internal/handler/issue.go` | `assertIssueStatusStillActive`（第 233 行起）→ 409 `errIssueStatusArchivedRace` |
+
+## 项目工作流（v0.13 新增 `workflow.sh`，MUL-7420 / MUL-8120）
+
+| 结论 | 源码位置 | 关键行 / 关键字段 |
+| --- | --- | --- |
+| 路由组 | `server/cmd/server/router.go` | `/api/issue-workflows`：GET/POST `/`、GET/PATCH/DELETE `/{id}`、PUT `/{id}/handoffs/{status}`、POST `/{id}/brief`；`/api/projects/{id}/workflow` POST；`/api/issues/{id}/workflow-handoff` GET |
+| 权限矩阵 | `server/internal/handler/issue_workflow.go` | 读/建：任何成员（第 26-34 行注释）；改/删（含 handoff）：`canEditIssueWorkflow`（第 42 行）= admin 或 owner；切项目 workflow：`canManageProjectWorkflow`（第 51 行）= admin 或项目 lead（MUL-8120） |
+| `IssueWorkflowResponse` schema | `server/internal/handler/issue_workflow.go` | `type IssueWorkflowResponse struct`（第 73 行起）：`id` / `workspace_id` / `name` / `description` / `is_default` / `owner_id` / `steps[]` / `project_ids[]` / 时间戳 |
+| `IssueWorkflowStepPayload`（step wire 形状） | `server/internal/handler/issue_workflow.go` | 第 65 行起：`status_key` / `handler: {type, id}` / `instructions` / `next_status_key` / `back_status_key` |
+| `IssueWorkflowWriteRequest`（create/update body） | `server/internal/handler/issue_workflow.go` | 第 306 行起：`name` / `description` / `steps`（整体替换；todo/done/cancelled 缺失自动补回固定位置）/ `status_mapping` / `dry_run` |
+| step 输入允许 `new_status` 新建目录状态 | `server/internal/handler/issue_workflow.go` | `IssueWorkflowStepInput`（第 297 行起）+ `createWorkflowStatus`（第 369 行起）；非 admin 建新状态 → `errStatusCreateForbidden`（第 335 行） |
+| `SetProjectWorkflowRequest` | `server/internal/handler/issue_workflow.go` | 第 916 行起：`workflow_id`（null = 回 Default）/ `status_mapping` / `dry_run`；响应含 `project` / `updated_issues` / `plan` |
+| `SetIssueWorkflowHandoffRequest` | `server/internal/handler/issue_workflow.go` | 第 1058 行起：step payload + `copy_for_project_id`（为单项目建副本并切换） |
+| **handoff 预览（只读）** | `server/internal/handler/issue_workflow.go` | `PreviewWorkflowHandoff`（第 1365 行起）：`status` 与 `project_id` 至少一个；响应 `WorkflowHandoffPreviewResponse`（第 1346 行起）：`handoff` / `workflow_name` / `from_status` / `to_status` / `handler_type` / `handler_id` / `previous_assignee_*` / `previous_runs[]` / `brief` |
+| handler 取值 | `server/internal/issueworkflow/issueworkflow.go` | `ResolveHandler`（第 590 行起）：agent/squad/member（带 id）、project_lead（项目 lead）、creator（issue 创建者） |
+| **写路径校验 1：status 必须在 workflow 里** | `server/internal/issueworkflow/issueworkflow.go` | `CheckStatus`（第 676 行起）→ `NotInWorkflowError`（第 630 行）：`status %q is not part of this project's workflow %q; use one of: ...`；handler 侧 `writeIssueWorkflowError`（`server/internal/handler/issue_workflow_entry.go` 第 122 行）映射 400 `status_not_in_workflow` |
+| **写路径校验 2：agent run 竞态** | `server/internal/handler/issue_workflow_entry.go` | `applyIssueWorkflow`（第 48 行起）+ `stepMovedError` → 409 `workflow_step_moved`（`StepMovedError` 文案见 issueworkflow.go 第 654 行） |
+| **create 自动 handoff** | `server/internal/handler/issue_workflow_entry.go` | create 不带 assignee 时，落到的列配置了 handler 就转派（`ResolveHandler`）；带 assignee 的写入保持显式选择 |
+| **update 新字段** | `server/internal/handler/issue.go` | `UpdateIssueRequest`（第 3550 行起）：`stop_previous_assignee_runs`（第 3592 行）/ `enter_workflow_step`（第 3597 行）；`suppress_run` / `handoff_note` 早在 v0.6 就有 |
+| **Default workflow 放行一切状态** | `server/internal/issueworkflow/issueworkflow.go` | `CheckStatus`：`def == nil \|\| def.IsDefault \|\| def.Has(key)` → nil |
+| 移动进项目时的等价状态映射 | `server/internal/issueworkflow/issueworkflow.go` | `MoveTarget`（第 615 行起）：同 category 第一步，否则 start status（todo） |
+
+## 附件下载元信息（v0.13 `attachments.sh download`）
+
+| 结论 | 源码位置 | 关键行 / 关键字段 |
+| --- | --- | --- |
+| `GET /api/attachments/{id}/download-metadata` 路由（v0.7.x 新增） | `server/cmd/server/router.go` | `r.Get("/api/attachments/{id}/download-metadata", h.GetAttachmentForDownload)` |
+| handler：按附件行自解析 workspace | `server/internal/handler/file.go` | `GetAttachmentForDownload`（第 675 行起）→ `loadAttachmentForDownload`（404 deny 防跨 workspace IDOR）→ `writeSignedAttachmentMetadata`（第 683 行起） |
+| 响应恒为**签名 URL**（不看 capability） | `server/internal/handler/file.go` | `resp.DownloadURL`（presign / cloudfront）+ `resp.AttachmentDownloadURL`（强制 `Content-Disposition: attachment` 的孪生 URL，第 712-735 行）；proxy 模式回退 60s capability 路径（第 752 行） |
+| URL 带 TTL，**不要持久化** | `server/internal/handler/file.go` | `h.attachmentDownloadURLTTL()`（默认 30 分钟，`ATTACHMENT_DOWNLOAD_URL_TTL` 可调）；持久化用 `markdown_url` |
+| 脚本取 URL 的优先级 | `multica-cli-skill/scripts/attachments.sh` | `attachment_download_url` → `download_url`；相对路径挂到 `server_url` |
+
+## 机器凭证边界（v0.13 文档化，MUL-8154）
+
+| 结论 | 源码位置 | 关键行 / 关键字段 |
+| --- | --- | --- |
+| PAT 管理 / CLI token 铸造改为 human-only | `server/internal/handler/personal_access_token.go` | `RequireHumanActor` 中间件（2026-07 commit da278c7d4 起）套在 `/api/tokens` 相关路由上 |
+| 被挡的凭证 | `server/internal/middleware/` | `mcn_`（cloud node）/ `mat_`（agent task）token 调 PAT 管理接口 → 403 |
+| 本 skill 不受影响 | `server/cmd/multica/cmd_auth.go` | `mul_` PAT 是人类凭证，issue/comment/attachment 操作不受 RequireHumanActor 限制 |

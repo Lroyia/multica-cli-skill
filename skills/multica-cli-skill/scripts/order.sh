@@ -10,10 +10,14 @@
 # 内容（可选）:
 #   --description TEXT                 markdown 正文
 #   --priority urgent|high|medium|low|none
-#   --status backlog|todo|in_progress|in_review|done|blocked|cancelled
+#   --status KEY                       7 个内建值或 workspace 自定义状态 key
+#                                      （内建: backlog todo in_progress in_review done blocked cancelled;
+#                                       自定义 key 用 status.sh list 查，大小写不敏感）
 #   --due-date YYYY-MM-DD
 #   --label-ids u1,u2,...
 #   --parent-issue-id UUID             子 issue 用
+#   --properties-json '{"<property-uuid>": <typed-value>, ...}'
+#                                      透传 CreateIssueRequest.properties（typed JSON bag）
 #   --allow-duplicate
 #
 # 负责人（4 选 1，优先级从高到低）:
@@ -22,6 +26,9 @@
 #   --squad  "前端组"                              # 强制按小队匹配
 #   --agent  "xiaoming"                            # 强制按 agent 匹配
 #   --member "老王"                                # 强制按 member 匹配
+#   --no-assignee                                  # 不指派。multica v0.7.x 起（MUL-7420），项目若启用了
+#                                                  # 带 handler 的 workflow，issue 落在哪列就自动转派给谁；
+#                                                  # 没有 workflow 时就是一条无负责人 issue。
 #
 # 项目（2 选 1）:
 #   --project-id UUID
@@ -64,11 +71,13 @@ ASSIGNEE_NAME=""     # 自由文本，自动匹配
 SQUAD_NAME=""        # 强制按 squad 匹配
 AGENT_NAME=""        # 强制按 agent 匹配
 MEMBER_NAME=""       # 强制按 member 匹配
+NO_ASSIGNEE="false"  # --no-assignee：不指派，交给项目 workflow handoff
 PROJECT_ID=""
 PROJECT_NAME=""      # 项目名自动匹配
 PARENT_ISSUE_ID=""
 DUE_DATE=""
 LABEL_IDS_CSV=""
+PROPERTIES_JSON=""
 CONFIG_PATH=""
 CONFIG_PATH_IS_DEFAULT="false"
 SERVER_URL_OVERRIDE=""
@@ -80,7 +89,7 @@ DRY_RUN="false"
 STRICT_MATCH="false"
 
 usage() {
-  sed -n '2,42p' "$0"
+  sed -n '2,49p' "$0"
 }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -139,10 +148,12 @@ while [[ $# -gt 0 ]]; do
     --parent-issue-id)  PARENT_ISSUE_ID="$2"; shift 2;;
     --due-date)         DUE_DATE="$2"; shift 2;;
     --label-ids)        LABEL_IDS_CSV="$2"; shift 2;;
+    --properties-json)  PROPERTIES_JSON="$2"; shift 2;;
     --config)           CONFIG_PATH="$2"; shift 2;;
     --server-url)       SERVER_URL_OVERRIDE="$2"; shift 2;;
     --app-url)          APP_URL_OVERRIDE="$2"; shift 2;;
     --workspace-id)     WORKSPACE_ID_OVERRIDE="$2"; shift 2;;
+    --no-assignee)      NO_ASSIGNEE="true"; shift;;
     --allow-duplicate)  ALLOW_DUPLICATE="true"; shift;;
     --json)             OUTPUT_JSON="true"; shift;;
     --dry-run)          DRY_RUN="true"; shift;;
@@ -162,14 +173,18 @@ if [[ -n "$ASSIGNEE_TYPE" || -n "$ASSIGNEE_ID" ]]; then
     die "Use either --assignee-type/--assignee-id or --assignee/--squad/--agent/--member, not both"
 fi
 
-# 必填：assignee（4 选 1：--assignee-type+id / --assignee / --squad / --agent / --member）
-if [[ -z "$ASSIGNEE_TYPE$ASSIGNEE_ID$ASSIGNEE_NAME$SQUAD_NAME$AGENT_NAME$MEMBER_NAME" ]]; then
+# 必填：assignee（--no-assignee 明确不指派；否则 4 选 1）
+if [[ "$NO_ASSIGNEE" == "true" ]]; then
+  [[ -n "$ASSIGNEE_TYPE$ASSIGNEE_ID$ASSIGNEE_NAME$SQUAD_NAME$AGENT_NAME$MEMBER_NAME" ]] && \
+    die "--no-assignee cannot be combined with --assignee-type/--assignee-id/--assignee/--squad/--agent/--member"
+elif [[ -z "$ASSIGNEE_TYPE$ASSIGNEE_ID$ASSIGNEE_NAME$SQUAD_NAME$AGENT_NAME$MEMBER_NAME" ]]; then
   die "assignee is required. Pass one of:
    --assignee-type member|agent|squad --assignee-id <uuid>      (显式 UUID)
    --assignee  \"<name>\"                                       (按名字 fuzzy match squad→agent→member)
    --squad     \"<name>\"                                       (强制 squad)
    --agent     \"<name>\"                                       (强制 agent)
-   --member    \"<name>\"                                       (强制 member；user.email 也参与匹配)"
+   --member    \"<name>\"                                       (强制 member；user.email 也参与匹配)
+   --no-assignee                                               (不指派；项目 workflow 会自动 handoff)"
 fi
 
 # 必填：project（2 选 1：--project-id / --project）
@@ -237,7 +252,7 @@ api_get() {
     -w "%{http_code}"
     -H "@$AUTH_HEADER_FILE"
     -H "X-Client-Platform: multica-cli-skill"
-    -H "X-Client-Version: 0.1.0"
+    -H "X-Client-Version: 0.13.0"
     -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')"
     -H "X-Client-Capabilities: stable_attachment_urls"
   )
@@ -505,6 +520,13 @@ BODY=$($JQ -n \
   | with_entries(select(.value != null))
   ')
 
+# --properties-json：透传 CreateIssueRequest.properties（ID-keyed typed bag）
+if [[ -n "$PROPERTIES_JSON" ]]; then
+  echo "$PROPERTIES_JSON" | $JQ -e 'type == "object"' >/dev/null 2>&1 \
+    || die "--properties-json must be a JSON object, e.g. '{\"<property-uuid>\": \"<value>\"}'"
+  BODY=$(echo "$BODY" | $JQ --argjson p "$PROPERTIES_JSON" '. + {properties: $p}')
+fi
+
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "==== DRY RUN: would POST $SERVER_URL/api/issues ===="
   echo "Headers: Authorization: Bearer ***, X-Client-Platform: multica-cli-skill, X-Workspace-ID: ${WORKSPACE_ID:-<unset>}"
@@ -525,7 +547,7 @@ CURL_ARGS=(
   -H "@$AUTH_HEADER_FILE"
   -H "Content-Type: application/json"
   -H "X-Client-Platform: multica-cli-skill"
-  -H "X-Client-Version: 0.1.0"
+  -H "X-Client-Version: 0.13.0"
   -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')"
   -H "X-Client-Capabilities: stable_attachment_urls"
 )
@@ -535,7 +557,17 @@ CURL_ARGS+=(-X POST --data-raw "$BODY" "$URL")
 HTTP=$(curl "${CURL_ARGS[@]}" || echo "000")
 
 if [[ "$HTTP" != "201" && "$HTTP" != "200" ]]; then
-  cat $TMP_DIR/resp.json >&2 || true
+  # 结构化 workflow 错误（MUL-7420）：项目用了 named workflow，status 不在其中
+  ERR_CODE="$(cat $TMP_DIR/resp.json 2>/dev/null | $JQ -r '.code // ""' || true)"
+  ERR_MSG="$(cat $TMP_DIR/resp.json 2>/dev/null | $JQ -r '.error // ""' || true)"
+  if [[ "$ERR_CODE" == "status_not_in_workflow" ]]; then
+    echo "ERROR: $ERR_MSG" >&2
+    echo "       该项目使用了 named workflow，status 必须取 workflow 列出的值之一；用 workflow.sh list 查看。" >&2
+  elif [[ "$ERR_CODE" == "invalid_issue_property" ]]; then
+    echo "ERROR: $ERR_MSG (property_id=$(cat $TMP_DIR/resp.json | $JQ -r '.property_id // ""'))" >&2
+  else
+    cat $TMP_DIR/resp.json >&2 || true
+  fi
   rm -f $TMP_DIR/resp.json "$SQUADS_FILE" "$AGENTS_FILE" "$MEMBERS_FILE" "$PROJECTS_FILE"
   die "POST /api/issues returned HTTP $HTTP"
 fi
@@ -546,6 +578,9 @@ IDENT="$(echo "$RESP" | $JQ -r '.identifier')"
 WS="$(echo "$RESP" | $JQ -r '.workspace_id')"
 STATUS_VAL="$(echo "$RESP" | $JQ -r '.status')"
 PRIORITY_VAL="$(echo "$RESP" | $JQ -r '.priority')"
+# 服务端最终生效的 assignee（可能来自显式匹配，也可能来自项目 workflow 的自动 handoff）
+RESP_ASSIGNEE_TYPE="$(echo "$RESP" | $JQ -r '.assignee_type // ""')"
+RESP_ASSIGNEE_ID="$(echo "$RESP" | $JQ -r '.assignee_id // ""')"
 
 # 反查 workspace 路径段（slug 优先，回退 name，再不行才回退到 id）。
 # Multica web 路由使用 workspace 的 slug/name，**不**直接用 id；用 id 拼出来的 URL 在浏览器里打不开。
@@ -585,15 +620,28 @@ WEB_URL="$APP_URL/$PATH_SEG/issues/$ID"
 # ---- 7) 输出 ----
 if [[ "$OUTPUT_JSON" == "true" ]]; then
   $JQ --arg url "$WEB_URL" --arg atype "$ASSIGNEE_TYPE" --arg aid "$ASSIGNEE_ID" --arg pid "$PROJECT_ID" \
+     --arg ratype "$RESP_ASSIGNEE_TYPE" --arg raid "$RESP_ASSIGNEE_ID" \
      --arg config_path "$CONFIG_PATH" \
-    '. + {web_url: $url, matched_assignee_type: $atype, matched_assignee_id: $aid, matched_project_id: $pid, config_path: $config_path}' \
+    '. + {web_url: $url, matched_assignee_type: $atype, matched_assignee_id: $aid, matched_project_id: $pid,
+          final_assignee_type: (if $ratype == "" then null else $ratype end),
+          final_assignee_id:   (if $raid == "" then null else $raid end),
+          config_path: $config_path}' \
     $TMP_DIR/resp.json
 else
   echo "Created $IDENT (id=$ID)"
   echo "   id:       $ID"
   echo "   status:   $STATUS_VAL"
   echo "   priority: $PRIORITY_VAL"
-  [[ -n "$ASSIGNEE_TYPE" ]] && echo "   assignee: $ASSIGNEE_TYPE/$ASSIGNEE_ID"
+  if [[ -n "$RESP_ASSIGNEE_TYPE" ]]; then
+    if [[ -n "$ASSIGNEE_TYPE" && "$ASSIGNEE_TYPE" == "$RESP_ASSIGNEE_TYPE" && "$ASSIGNEE_ID" == "$RESP_ASSIGNEE_ID" ]]; then
+      echo "   assignee: $RESP_ASSIGNEE_TYPE/$RESP_ASSIGNEE_ID"
+    else
+      # --no-assignee 时被项目 workflow 自动 handoff 指派的负责人（MUL-7420）
+      echo "   assignee: $RESP_ASSIGNEE_TYPE/$RESP_ASSIGNEE_ID (workflow handoff)"
+    fi
+  else
+    echo "   assignee: (未指派)"
+  fi
   [[ -n "$PROJECT_ID"     ]] && echo "   project:  $PROJECT_ID"
   echo "   url:      $WEB_URL"
 fi

@@ -2,7 +2,7 @@
 
 [English](README.md) | **中文**
 
-复用用户现有的 Multica CLI 登录配置，直接通过 Bash + curl + jq 创建、查询、更新 Multica issue，并管理评论和附件。
+复用用户现有的 Multica CLI 登录配置，直接通过 Bash + curl + jq 创建、查询、更新 Multica issue，并管理评论、附件、状态目录与项目工作流。已对齐 Multica 服务端 **v0.7.1**（workspace 自定义状态 MUL-6243、项目工作流 MUL-7420、附件下载元信息、human-only PAT 铸造 MUL-8154）。
 
 默认读取 `multica login` 写入的 `~/.multica/config.json`。本 skill **只读**该文件，不会修改或回显其中的 token。
 
@@ -78,7 +78,7 @@ multica-cli-skill/
 ├── skills/
 │   └── multica-cli-skill/  # skill 本身
 │       ├── SKILL.md
-│       ├── scripts/        # order.sh, list.sh, update.sh, comment.sh, attachments.sh
+│       ├── scripts/        # order.sh, list.sh, update.sh, comment.sh, attachments.sh, status.sh, workflow.sh
 │       └── references/     # multica-cli-skill-source-map.md
 ├── README.md               # 英文（默认）
 ├── README.zh.md            # 中文
@@ -141,6 +141,13 @@ bash scripts/comment.sh list MUL-123 --threads-only
 # 7. 附件
 bash scripts/attachments.sh upload ./error.png --issue MUL-123
 bash scripts/attachments.sh list MUL-123
+bash scripts/attachments.sh download <attachment-uuid> -o ./error.png
+
+# 8. 自定义状态与项目工作流（Multica v0.7.x）
+bash scripts/status.sh list                                # workspace 状态目录（内建 + 自定义）
+bash scripts/workflow.sh list                              # 工作流与 handoff 配置
+bash scripts/workflow.sh preview MUL-123 --status in_review # 这次移动会触发什么？
+bash scripts/update.sh MUL-123 --status in_review --stop-previous-assignee-runs --yes
 ```
 
 ## 配置选择与覆盖顺序
@@ -218,3 +225,11 @@ C:/Users/Alice/.multica/config.json
 | 50 | 去掉空格、`-`、`_` 后做子串匹配 |
 
 `--strict-match` 只接受唯一的完全相同结果。其余 API、参数与行为详见 `SKILL.md`。
+
+## multica v0.7.1 新增支持（skill v0.13）
+
+- **workspace 自定义状态（MUL-6243）**：create / update 的 `status` 接受 workspace 状态目录里的自定义 key（大小写不敏感）。`status.sh list` / `status.sh keys` 查目录；`update.sh` 对非内建值先查目录校验并归一化成标准 key。
+- **项目工作流（MUL-7420）**：新增 `workflow.sh` —— `list` / `get` / `preview`（只读 handoff 预览）/ `set-project` / `handoff` / `create` / `update` / `delete`。`update.sh` 透传 `--stop-previous-assignee-runs` 与 `--enter-workflow-step`；`status_not_in_workflow`（400）与 `workflow_step_moved`（409）结构化错误会解析成人话提示。
+- **`order.sh --no-assignee`**：建一条不指派的 issue，由项目工作流自动 handoff；生效的负责人会在输出与 `--json` 的 `final_assignee_*` 里报告。
+- **附件下载**：`attachments.sh download <id> [-o path]` 走 v0.7.x 的 `GET /api/attachments/{id}/download-metadata` 路由（按附件行自解析 workspace），优先强制 attachment disposition 的 `attachment_download_url`。
+- **机器凭证边界（MUL-8154）**：PAT 管理接口改为 human-only；本 skill 依赖的 `mul_` 个人 PAT 不受影响，但 `mcn_` / `mat_` 凭证不能再铸造 PAT。

@@ -1,6 +1,6 @@
 ---
 name: multica-cli-skill
-description: "Use when you need to create, list, search, fetch, update, comment on, or manage attachments for Multica issues using the user's existing Multica CLI login. Reads `~/.multica/config.json` by default (written by `multica login`), with a config search order of `--config <path>` > `<skill_dir>/config.json` > `$MULTICA_CLI_ORDER_CONFIG` > `~/.multica/config.json`, plus `$MULTICA_TOKEN` overrides, and provides fuzzy assignee/project matching through Bash, curl, and jq. Works in Windows Git Bash, macOS, and Linux."
+description: "Use when you need to create, list, search, fetch, update, comment on, or manage attachments for Multica issues using the user's existing Multica CLI login. Reads `~/.multica/config.json` by default (written by `multica login`), with a config search order of `--config <path>` > `<skill_dir>/config.json` > `$MULTICA_CLI_ORDER_CONFIG` > `~/.multica/config.json`, plus `$MULTICA_TOKEN` overrides, and provides fuzzy assignee/project matching through Bash, curl, and jq. Supports workspace custom statuses (MUL-6243), project workflows and handoffs (MUL-7420), status catalog discovery, workflow handoff preview, and attachment download (download-metadata). Works in Windows Git Bash, macOS, and Linux."
 allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 ---
 
@@ -8,6 +8,14 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 
 默认读取 `multica login` 写入的 `~/.multica/config.json`，直接调用 Multica 后端创建、查询、更新 issue，并管理评论和附件。适合希望复用本机 CLI 登录状态、但需要脚本化 fuzzy match 和完整 API 能力的用户。配置文件仅被读取，不会被本 skill 改写。
 
+> **v0.13 对齐 multica v0.7.1**（2026-10）：
+> 1. **workspace 自定义状态（MUL-6243）**：issue 的 `status` 不再只有 7 个内建值。写路径按 workspace 的状态目录解析（大小写不敏感、去首尾空格）。`update.sh` 对非内建 status 会先查 `GET /api/issue-statuses` 校验并归一化成标准 key；新增 `status.sh` 一键列目录。`order.sh` 的 status 原样透传（服务端校验）。
+> 2. **项目工作流（MUL-7420）**：新增 `workflow.sh` —— list / get / preview（handoff 预览）/ set-project / handoff / create / update / delete，覆盖 `server/internal/handler/issue_workflow.go` 暴露的全部客户端入口。project 用 named workflow 时 status 必须取 workflow 列出的值（400 `status_not_in_workflow`）；issue 进入配置了 handler 的列会自动转派并启动 run。`update.sh` 新增 `--suppress-run` / `--stop-previous-assignee-runs` / `--enter-workflow-step` / `--duplicate-of-issue-id`。
+> 3. **`order.sh --no-assignee`**：配合 workflow handoff，可以建一条"不指派"的 issue，由项目工作流决定谁接（`--assignee*` 与 `--no-assignee` 互斥）。
+> 4. **附件下载（MUL-7991 系列）**：`attachments.sh download <id> [-o path]` 走 `GET /api/attachments/{id}/download-metadata`（v0.7.x 新路由，按附件行自解析 workspace），优先 `attachment_download_url`（强制 attachment disposition）回退 `download_url`。
+> 5. **机器凭证边界（MUL-8154）**：`/api/tokens`（PAT 管理）与 `POST /api/cli-token` 现在 `RequireHumanActor`——`mcn_`（cloud node）/`mat_`（agent task）不能铸造 PAT/CLI token。本 skill 用的 `mul_` PAT 是人类凭证，不受影响。
+> 6. 请求头 `X-Client-Version` 统一为本 skill 版本 `0.13.0`。搜索接口在超时/取消时可能返回 503/408（带 `failed to search issues` / cancellation 语义）。
+>
 > **v0.12 目录迁移**：本 skill 随 Claude Code 插件市场发布，从仓库根 `SKILL.md` / `scripts/` / `references/` 改为插件规范布局 `skills/multica-cli-skill/{SKILL.md, scripts/, references/}`。脚本里 `SKILL_DIR` 通过 `dirname(dirname(SCRIPT_PATH))` 计算，自动跟随新位置；`<skill_dir>/config.json` 现在指 `skills/multica-cli-skill/config.json`。
 
 > **v0.7 必填收紧**：下单接口（`order.sh`）的必填项现在是 **`--title`** / **`--description`** / **负责人**（`--assignee*` 任一） / **项目**（`--project*` 任一）。状态（`--status`）不传则服务端默认 `todo`（"待办"），与 `server/internal/handler/issue.go` 的 `CreateIssue` 默认行为一致。
@@ -37,6 +45,7 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 - 自动化场景：CI 失败、监控告警、表单提交后，要自动在 Multica 里建一条跟踪工单。
 - 想回查"我之前用这个 skill 创建的工单现在什么状态"。
 - 想发 / 改 / resolve issue 下的评论（v0.10 `comment.sh`）—— 包括 mark thread resolved / unresolve / reply / 写一条不触发 agent 的 /note。
+- 想查 workspace 的合法 status（含自定义状态）、把 issue 移进工作流的某一列之前先预览 handoff（v0.13 `status.sh` / `workflow.sh`）。
 - 不要使用本 skill 的场景：用户希望走完整 UI 流程、或者只是查看 issue —— 直接用 `multica issue` 即可。
 
 ## 凭证从哪来（v0.1.0）
@@ -84,11 +93,19 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 | 拉小队列表 | `GET /api/squads?workspace_id=...` | `[]SquadResponse` |
 | 拉 agent 列表 | `GET /api/agents?workspace_id=...` | `[]AgentResponse` |
 | 拉成员列表 | `GET /api/workspaces/{id}/members` | `[]MemberWithUserResponse` |
-| 拉项目列表 | `GET /api/projects?workspace_id=...` | `[]ProjectResponse` |
+| 拉项目列表 | `GET /api/projects?workspace_id=...` | `{"projects":[...], "total":N}` |
+| **状态目录** | `GET /api/issue-statuses?workspace_id=...` | `[]IssueStatusResponse`（v0.13 `status.sh`；`include_archived=true` 含已归档） |
 | **下单** | `POST /api/issues?workspace_id=...` | `CreateIssueRequest` body，返 `IssueResponse` |
 | 列工单 | `GET /api/issues?workspace_id=...` | 支持 `status` / `priority` / `assignee_id` / `creator_id` / `project_id` / `open_only` / `include_closed` 等过滤 |
-| 搜索 | `GET /api/issues/search?q=...` | 全文搜索 |
-| 取单条 | `GET /api/issues/{id}` | 单条详情 |
+| 搜索 | `GET /api/issues/search?q=...` | 全文搜索；超时/取消返回 503/408 |
+| 取单条 | `GET /api/issues/{id}` | 单条详情（id 同时接 UUID 和 `PREFIX-N` 标识，prefix 可含数字如 `V2-12`） |
+| **工作流列表** | `GET /api/issue-workflows?workspace_id=...` | `{"workflows":[...], "total":N}`（v0.13 `workflow.sh`） |
+| **工作流详情** | `GET /api/issue-workflows/{id}` | `IssueWorkflowResponse` |
+| **建/改/删工作流** | `POST`/`PATCH`/`DELETE /api/issue-workflows[/{id}]` | 建所有成员可；改/删限 workflow owner 或 workspace admin（MUL-8120） |
+| **配置列 handoff** | `PUT /api/issue-workflows/{id}/handoffs/{status}` | `IssueWorkflowStepPayload` body；`copy_for_project_id` 可为单项目建副本 |
+| **切换项目工作流** | `POST /api/projects/{id}/workflow` | `{"workflow_id": uuid\|null, "status_mapping"?, "dry_run"?}`；admin 或项目负责人 |
+| **handoff 预览** | `GET /api/issues/{id}/workflow-handoff?status=...[&project_id=...]` | 只读预览：是否会转派、给谁、brief、原负责人的活跃 run |
+| **附件元信息+签名 URL** | `GET /api/attachments/{id}/download-metadata` | v0.7.x 新路由；按附件行自解析 workspace，返回新签 `download_url` / `attachment_download_url`（带 TTL） |
 
 请求头（POST 下单）：
 
@@ -97,8 +114,8 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 | `Authorization` | 是 | `Bearer <token>` |
 | `Content-Type` | 是 | `application/json` |
 | `X-Client-Capabilities` | 否 | 推荐传 `stable_attachment_urls` |
-| `X-Client-Platform` | 否 | 标识调用方，比如 `multica-cli-skill` |
-| `X-Client-Version` | 否 | 当前 `0.6.0` |
+| `X-Client-Platform` | 否 | 标识调用方，本 skill 传 `multica-cli-skill` |
+| `X-Client-Version` | 否 | 本 skill 当前 `0.13.0` |
 | `X-Client-OS` | 否 | `linux` / `darwin` / `windows` |
 | `X-Workspace-ID` | 否 | 与 URL `?workspace_id=` 二选一；都给最稳 |
 
@@ -108,7 +125,7 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
 {
   "title":         "必填",
   "description":   "可选，markdown",
-  "status":        "backlog|todo|in_progress|in_review|done|blocked|cancelled",  // 缺省 todo
+  "status":        "7 个内建 key 或 workspace 自定义 key；大小写不敏感。缺省 todo",
   "priority":      "urgent|high|medium|low|none",                                 // 缺省 none
   "assignee_type": "member | agent | squad",                                       // 可选
   "assignee_id":   "<uuid>",                                                       // 可选
@@ -119,9 +136,16 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
   "due_date":      "YYYY-MM-DD",                                                   // 可选
   "attachment_ids": ["<uuid>"],                                                    // 可选
   "label_ids":     ["<uuid>"],                                                     // 可选
+  "properties":    {"<property-uuid>": <typed-value>},                             // 可选（重复 key 整单 400）
   "allow_duplicate": false                                                         // 可选
 }
 ```
+
+> **v0.7.x 项目工作流对下单的影响（MUL-7420）**：`project_id` 指向使用 named workflow 的项目时——
+> 1. `status` 必须取该 workflow 列出的值，否则 400 `status_not_in_workflow`（`allowed_statuses` 数组）；
+> 2. 不传 assignee 时，issue 落到的列若配置了 handler，会**自动转派**给 handler 并以其 instructions 启动 run；
+> 3. 不传 status 时落 `todo`（workflow 的 start status）。
+> 子 issue 未带 project 时继承父 issue 的 project 再套以上规则。
 
 成功响应（`IssueResponse`）核心字段：`id` / `workspace_id` / `number` / `identifier`（`MUL-N`）/ `title` / `status` / `priority` / `creator_type` / `creator_id` / `created_at`。
 
@@ -176,11 +200,11 @@ allowed-tools: Bash(curl *), Bash(jq *), Bash(multica *), Read, Write
      1. `multica workspace list`（注意：CLI 可能登录在别的 workspace，看不到当前 workspace）
      2. `GET {server_url}/api/workspaces/{workspace_id}`（用本 skill 的 token；不依赖 CLI）
      3. 实在拿不到 → 回退到 `workspace_id` 并在 stderr 打 `WARN:` 警告
-8. **输出结果**：默认人话版；`--json` 时输出含 `web_url` / `matched_assignee_type` / `matched_assignee_id` / `matched_project_id` / `config_path` 的 JSON。
+8. **输出结果**：默认人话版；`--json` 时输出含 `web_url` / `matched_assignee_type` / `matched_assignee_id` / `matched_project_id` / `final_assignee_type` / `final_assignee_id` / `config_path` 的 JSON。`final_assignee_*` 是服务端生效值——`--no-assignee` 时它来自项目 workflow 的自动 handoff。
 
 ## 脚本实现（bash + curl + jq）
 
-五个可执行脚本保存在 `multica-cli-skill/scripts/`，依赖：`curl` + `jq` + `uname`。
+七个可执行脚本保存在 `multica-cli-skill/scripts/`，依赖：`curl` + `jq` + `uname`。
 
 ### `order.sh` — 下单
 
@@ -195,28 +219,30 @@ order.sh --title TEXT --description TEXT --assignee ... --project ... [选项]
   或 --squad     "<name>"        (强制 squad)
   或 --agent     "<name>"        (强制 agent)
   或 --member    "<name>"        (强制 member；user.email 也参与匹配)
+  或 --no-assignee               (v0.13；不指派，交给项目 workflow handoff)
   --project-id UUID              (显式 UUID)
   或 --project   "<title>"       (按名字 fuzzy match /api/projects)
 
 内容（可选）:
   --priority urgent|high|medium|low|none
-  --status backlog|todo|in_progress|in_review|done|blocked|cancelled
+  --status KEY                    7 个内建值或 workspace 自定义状态 key（大小写不敏感）
                                   缺省: 不传则服务端默认 todo（"待办"）
   --due-date YYYY-MM-DD
   --label-ids u1,u2,...
   --parent-issue-id UUID
+  --properties-json '{"<property-uuid>": <value>, ...}'   (v0.13；透传 properties)
   --allow-duplicate
 
 凭证:
-  --config <path>                  显式指定 CLIConfig 文件；缺省查 $MULTICA_CLI_ORDER_CONFIG
-                                  再缺省 ~/.multica/config.json
+  --config <path>                  显式指定 CLIConfig 文件；缺省查 <skill_dir>/config.json
+                                  再查 $MULTICA_CLI_ORDER_CONFIG，最后 ~/.multica/config.json
   --server-url URL                 覆盖 config 里的 server_url
   --app-url URL                    覆盖 config 里的 app_url
   --workspace-id UUID              覆盖 config 里的 workspace_id
   $MULTICA_TOKEN                   覆盖 config 里的 token（CI / 沙箱最常用）
 
 输出:
-  --json                           完整 JSON（含 matched_* + config_path）
+  --json                           完整 JSON（含 matched_* + final_assignee_* + config_path）
   --dry-run                        打印请求体不下单
   --strict-match                   auto-match 只接受完全相同的名字
 ```
@@ -250,7 +276,8 @@ list.sh get    <identifier|uuid>       # MUL-123 / 5c1f-...
 update.sh <identifier|uuid> [字段选项]
 
 字段（至少给一个，否则报错）:
-  --status backlog|todo|in_progress|in_review|done|blocked|cancelled
+  --status KEY                    7 个内建值或 workspace 自定义状态 key（大小写不敏感；
+                                  非内建值会先查 /api/issue-statuses 校验并归一化）
   --priority urgent|high|medium|low|none
   --assignee-type member|agent|squad --assignee-id UUID       (显式 UUID)
   或 --assignee "<name>"      (按名字 fuzzy match squad→agent→member)
@@ -261,6 +288,10 @@ update.sh <identifier|uuid> [字段选项]
   或 --project "<title>"      (按名字 fuzzy match /api/projects)
   --title TEXT
   --description TEXT
+  --duplicate-of-issue-id UUID  (v0.13 透传；标记为 duplicate 并置 cancelled)
+  --suppress-run                (v0.13 透传；应用变更但不触发 agent run)
+  --stop-previous-assignee-runs (v0.13 透传；handoff 时取消原负责人的活跃 run，MUL-7420)
+  --enter-workflow-step         (v0.13 透传；换项目时进入目标 workflow 对应列触发 handoff)
   --json '{"k":"v",...}'       (原始 body，跳过白名单校验)
 
 控制:
@@ -270,13 +301,15 @@ update.sh <identifier|uuid> [字段选项]
   --config / --server-url / --app-url / --workspace-id
 ```
 
-**白名单校验**：`--status` / `--priority` / `--assignee-type` 都接受合法值集合，非法值立刻报错（不真发请求）。`--json` 是 escape hatch——跳过白名单直接透传 body。
+**白名单校验**：`--priority` / `--assignee-type` 接受合法值集合，非法值立刻报错（不真发请求）。`--status` 放行 7 个内建值；其他值视为自定义 key，先查 workspace 状态目录（`GET /api/issue-statuses`，大小写不敏感匹配 key），命中则归一化成标准 key，未命中报错并列出可用值。`--json` 是 escape hatch——跳过白名单直接透传 body。
 
 **自动警告**：
 - `done` → 任何非 `done`：打印 "WARN: 正在把 done 工单改回 ...，请确认确实是要 reopen"
 - `in_review` → `backlog`：打印 "WARN: 正在把 in_review 工单踢回 backlog（基本等于撤销评审）"
 
-**支持的字段（v0.8 探查结论）**：后端 `PUT /api/issues/{id-or-identifier}` 接 JSON body，**支持** `status` / `priority` / `assignee_id` (+ `assignee_type`) / `project_id` / `title` / `description`；**不接受** `stage`（直接被丢弃）；**静默忽略** `identifier` / `number`（不可改，避免和 prefix 冲突）。`PATCH` 返回 405，所以**只走 PUT**。
+**支持的字段（v0.8 探查结论，v0.13 更新）**：后端 `PUT /api/issues/{id-or-identifier}` 接 JSON body，**支持** `status` / `priority` / `assignee_id` (+ `assignee_type`) / `project_id` / `title` / `description` / `duplicate_of_issue_id` / `suppress_run` / `stop_previous_assignee_runs` / `enter_workflow_step`；**不接受** `stage`（直接被丢弃）；**静默忽略** `identifier` / `number`（不可改，避免和 prefix 冲突）。`PATCH` 返回 405，所以**只走 PUT**。
+
+**v0.7.x 工作流行为（MUL-7420）**：issue 所在项目使用 named workflow 时——状态变更必须是 workflow 列出的值（否则 400 `status_not_in_workflow`，脚本会解析成友好提示）；进入配置了 handler 的列会自动转派并启动 run（agent run 只能从自己工作的列移走，否则 409 `workflow_step_moved`）。移动状态前可以用 `workflow.sh preview` 预览 handoff。
 
 **示例**：
 
@@ -423,6 +456,50 @@ echo "$RESULT" | jq 'length'
 
 > **安全 / 误删警示**：用 `comment.sh update` / `delete` 改 **别人** 的评论时，服务端只检查 `isAuthor || isAdmin`。管理员 token 能修改或删除他人评论；虽然脚本默认询问 `Continue? [y/N]`，但 `--yes` 会跳过确认。**调试时始终使用自己创建的测试评论。**
 
+### `status.sh` — workspace 状态目录（v0.13 新增）
+
+multica v0.7.x（MUL-6243）里 issue 的 `status` 不再只有 7 个内建值——workspace 可以自定义状态，写路径按 workspace 的状态目录解析（大小写不敏感、去首尾空格，命中即归一化为标准 key）。在下单 / 改状态之前先查一眼目录，避免瞎猜 key。
+
+```text
+status.sh list [--include-archived] [--json]   # 列目录（显示顺序；builtin/custom 分行标注）
+status.sh keys  [--include-archived]           # 只输出 key（一行一个，便于 xargs / 脚本消费）
+
+公共选项: --config / --server-url / --app-url / --workspace-id / --json
+```
+
+响应字段（`[]IssueStatusResponse`）：`id` / `workspace_id` / `key` / `name` / `description` / `category`（unstarted|started|done|closed）/ `color` / `icon` / `is_system` / `position` / `archived_at`。内建 7 个 key 永远可用（`backlog todo in_progress in_review done blocked cancelled`），自定义状态的 key 由服务端按名字派生。读目录任何成员都可以；建 / 改 / 删 / 排序状态是 owner/admin 的 UI 操作，本 skill 只读。
+
+### `workflow.sh` — 项目工作流（v0.13 新增，MUL-7420）
+
+项目可以绑定一个 workflow（一列 status + 每列的 handoff 配置）。issue 进入配置了 handler 的列时自动转派给 handler（agent / squad / member / 项目负责人 / 创建者）并以其 instructions 启动 run。project 用 named workflow 时，issue 的 status 只能取 workflow 列出的值。
+
+```text
+workflow.sh list [--json]                                  # workspace 所有 workflow（含 steps / handoffs / 用它的项目）
+workflow.sh get <workflow-id> [--json]                     # 单个 workflow 详情
+workflow.sh preview <issue-id-or-identifier>               # 预览：把 issue 移到某状态/项目会发生什么（只读不写）
+              [--status KEY] [--project-id UUID] [--json]
+workflow.sh set-project <project-id-or-title>              # 切换项目使用的 workflow（admin / 项目 lead）
+              (--workflow-id UUID | --default)
+              [--dry-run] [--status-mapping '{"old":"new",...}'] [--json]
+workflow.sh handoff <workflow-id> <status-key>             # 配置某列的 handoff（workflow owner / admin）
+              [--handler-type agent|squad|member|project_lead|creator|none]
+              [--handler-id UUID] [--instructions TEXT]
+              [--next-status-key KEY] [--back-status-key KEY]
+              [--copy-for-project-id UUID] [--yes] [--dry-run]
+workflow.sh create --name NAME [--description D] --steps-json JSON [--dry-run]
+workflow.sh update <workflow-id> [--name N] [--description D]
+                   [--steps-json JSON] [--status-mapping JSON] [--dry-run]
+workflow.sh delete <workflow-id> [--yes]
+
+公共选项: --config / --server-url / --app-url / --workspace-id / --json / --yes
+```
+
+`steps-json` 数组元素 = `IssueWorkflowStepInput`：`status_key`（或 `new_status: {name, category, color}` 新建状态）/ `handler: {type, id}` / `instructions` / `next_status_key` / `back_status_key`。steps 整体替换列；todo / done / cancelled 缺失时服务端自动补回固定位置。
+
+**权限（MUL-8120）**：读 / 建所有成员；改 / 删（含 handoff）限 workflow owner 或 workspace admin（Default workflow 无 owner，仅 admin）；切换项目 workflow 限 admin 或项目负责人。脚本的写子命令默认会问确认（`--yes` 跳过）。
+
+**错误码**：400 `status_not_in_workflow`（status 不在 workflow 里，附 allowed_statuses）/ 400 `invalid_handoff` / 409 `workflow_step_moved`（agent run 之外他人已移动 issue）。`set-project` 缺少 `status_mapping` 时返回 required mapping 清单（`plan.required[]`），先 `--dry-run` 看计划再带 mapping 重放。
+
 ### 典型调用
 
 ```bash
@@ -496,6 +573,25 @@ bash scripts/update.sh MUL-123 --status done
 bash scripts/update.sh MUL-123 --priority high --assignee "前端组" --yes
 bash scripts/update.sh MUL-123 --status done --dry-run     # 先看 diff
 bash scripts/update.sh MUL-123 --json '{"status":"done"}' --yes  # 透传 body
+
+# 13. workspace 自定义状态（v0.13）：先查目录再下单/改状态
+bash scripts/status.sh list
+bash scripts/status.sh keys
+bash scripts/update.sh MUL-123 --status "waiting_for_design" --yes   # 自定义 key 大小写不敏感
+
+# 14. 项目工作流（v0.13，MUL-7420）：预览 handoff → 再动手
+bash scripts/workflow.sh list
+bash scripts/workflow.sh preview MUL-123 --status in_review
+bash scripts/update.sh MUL-123 --status in_review --stop-previous-assignee-runs --yes
+bash scripts/workflow.sh set-project "支付重构" --default --dry-run
+
+# 15. 不指派建单，交给项目 workflow 的 handoff（v0.13）
+bash scripts/order.sh --title "..." --description "..." \
+  --project "支付重构" --no-assignee
+# → 响应 assignee 字段即 workflow handler；--json 里的 final_assignee_* 同义
+
+# 16. 附件下载（v0.13）
+bash scripts/attachments.sh download <attachment-uuid> -o ./out.png
 ```
 
 > **必填校验**：传少了 `order.sh` 会立即报错（exit 1）并提示缺哪项。例如忘了 `--description` 会得到 `ERROR: --description is required (issue 正文); 不想写就传 " " 或简单描述`；忘了负责人会得到 `ERROR: assignee is required. Pass one of: ...`；忘了项目会得到 `ERROR: project is required. Pass one of: ...`。
@@ -505,13 +601,23 @@ bash scripts/update.sh MUL-123 --json '{"status":"done"}' --yes  # 透传 body
 | HTTP | 含义 | 怎么办 |
 | --- | --- | --- |
 | 200/201 | 创建成功 | 解析 `identifier` + `web_url` |
-| 400 | 请求体不合法 | 看 `error`：`title is required` / `invalid status "X"` / `stage must be >= 1` |
+| 400 | 请求体不合法 | 看 `error`：`title is required` / `invalid status "X"`（错误信息会列出该 workspace 可用的状态标签）/ `stage must be >= 1`；结构化 code 见下表 |
 | 401 | token 失效 | 重新运行 `multica login`，或更新显式 `--config` 文件 / `$MULTICA_TOKEN` |
 | 403 | 没有当前 workspace 权限 | 用 `multica auth status` 确认当前 CLI 登录和 workspace |
 | 404 | workspace_id 不存在 / 域名错 | 检查 `config.json` 里的 `server_url` / `workspace_id` |
 | 409 | 标题重复 | 加 `--allow-duplicate` |
 | 422 | 跨 workspace 引用 | 把所有 UUID 限定到同一 workspace |
+| 503/408 | 搜索超时或被取消（v0.7.x） | 缩小 `--q` / 过滤范围后重试 |
 | 5xx | 服务端问题 | 退避重试 1~2 次 |
+
+结构化错误 code（响应体 `{"code": "...", "error": "..."}`，v0.13 起脚本会解析成人话）：
+
+| code | HTTP | 含义 |
+| --- | --- | --- |
+| `status_not_in_workflow` | 400 | status 不在该项目 workflow 列出的值里（MUL-7420）；用 `workflow.sh list` 看允许的 key |
+| `workflow_step_moved` | 409 | issue 在当前 run 工作期间被别人移动；不要在本 run 里再改状态，需要时留评论 |
+| `invalid_handoff` | 400 | handoff 配置非法（handler 不存在 / next/back 状态不在 workflow 里） |
+| `invalid_issue_property` | 400 | `properties` 里的 property id 非法或重复 |
 
 凭证相关：
 
@@ -526,13 +632,16 @@ bash scripts/update.sh MUL-123 --json '{"status":"done"}' --yes  # 透传 body
 | **v0.7** 缺 `--title` | 报错 `--title is required` |
 | **v0.7** 缺 `--description` | 报错 `--description is required (issue 正文); 不想写就传 " " 或简单描述` |
 | **v0.7** 缺负责人（4 选 1 都没给） | 报错 `assignee is required. Pass one of: ...` |
+| **v0.13** `--no-assignee` 与 `--assignee*` 同时传 | 报错 `--no-assignee cannot be combined with ...` |
 | **v0.7** 缺项目（2 选 1 都没给） | 报错 `project is required. Pass one of: ...` |
-| 缺 `--status` | 不报错；服务端默认 `todo`（"待办"），见 `server/internal/handler/issue.go:2430-2433` |
+| 缺 `--status` | 不报错；服务端默认 `todo`（"待办"），见 `server/internal/handler/issue.go` |
+| **v0.13** update.sh 传非内建 status 且目录里没有 | 先查 `GET /api/issue-statuses` 校验；未命中报错并列出该 workspace 可用的 status key |
 
 ## 与已有 CLI 命令的关系
 
 - `multica issue create` 与本 skill 都调用 `POST /api/issues`，并默认读取同一个 `~/.multica/config.json`。本 skill 额外提供 fuzzy assignee/project 匹配、查询、更新、评论和附件脚本。
 - 想看小队列表 / 项目列表：分别对应 `multica squad list`、`multica project list`（同样走 CLI 的凭证）。脚本里如果检测到 `multica` 二进制在场，会先用它反查 workspace slug 来拼 web URL；如果 CLI 看不到当前 workspace（登录到别的 profile 了），会自动 fallback 到 `GET /api/workspaces/{id}`。
+- 状态目录 / 工作流管理在 CLI 侧没有直接对应子命令（走 Web UI 配置），本 skill 的 `status.sh` / `workflow.sh` 填补了脚本化读取与预览的空缺。
 - 更丰富的操作（label 管理、attachment 上传）：参考 `multica issue --help`，本 skill 不重复造轮子。
 
 ## 安全注意事项
@@ -547,10 +656,13 @@ bash scripts/update.sh MUL-123 --json '{"status":"done"}' --yes  # 透传 body
 
 ## 已知不支持 / 后续扩展
 
-- ❌ 暂不支持 `attachment_ids` 上传流程（需要先调上传接口）。
+- ~~❌ 暂不支持 `attachment_ids` 上传流程（需要先调上传接口）。~~ `attachments.sh upload`（v0.10）已覆盖；`--issue` / `--comment` 绑定 + `order.sh` 里 `attachment_ids` 透传。
 - ~~❌ 暂不支持 `squad` 作为 `assignee_type`（后端只接受 `member` / `agent`）。~~ **已废除**：2026-07-30 探查后确认 `assignee_type=squad` 被后端接受，`--squad` 命令正常工作。
 - ❌ 没有 idempotency key，重试由调用方负责去重。
 - ❌ `update.sh` 不支持改 `stage`（后端 PUT 不接受；后端设计上应该是单独接口）。
 - ❌ `update.sh` 不能改 `identifier` / `number`（后端静默忽略；应该是有意锁住的，避免和 prefix 冲突）。
+- ❌ `status.sh` 只读。状态目录的创建 / 改名 / 归档 / 排序是 owner/admin 的 Web UI 操作（`POST/PATCH/DELETE /api/issue-statuses`），不在本 skill 范围。
+- ❌ `workflow.sh` 的 `brief` 预览（`POST /api/issue-workflows/{id}/brief`）未脚本化——handoff 编辑预览场景用 `preview` 覆盖不到时再补。
+- ✅ v0.13 已加：`status.sh` 状态目录、`workflow.sh` 项目工作流（list / get / preview / set-project / handoff / create / update / delete）、`order.sh --no-assignee` / `--properties-json`、`update.sh` workflow 字段透传与自定义 status 校验、`attachments.sh download`。
 - ✅ 后续可以加：`--attachment <path>` 一站式上传、`--assignee-prefer <type>`、`-i <inbox-file>` 批量、PowerShell 版本、**token 即将过期检测**（如果用临时 PAT，提前 N 天告警）。
 - ✅ v0.10 已加：`comment.sh` 完整评论 CRUD（list / add / update / delete / resolve / unresolve）。后续可加：`comment.sh get <comment-id>` 现在只能 `list ... \| jq`，可加客户端单条查询；`comment.sh add --from-file multi-line.md` 现在是 `--content-file` 单一文件，可加 stdin；`comment.sh update --lock-target` 锁定只能在当前评论加 reply 防误删；`comment.sh add --require-author-only` 全局避错保险。

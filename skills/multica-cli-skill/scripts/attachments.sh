@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# multica-cli-skill / attachments.sh — 管附件（v0.10 新增）
+# multica-cli-skill / attachments.sh — 管附件（v0.10 新增；v0.13 加 download）
 #
 # 子命令（互斥）：
 #   upload <file> [--issue LRO-45] [--comment <uuid>]   上传文件，绑到 issue/comment
 #   list   <issue-id-or-uuid>                          列某个 issue 的附件
 #   get    <attachment-id-or-uuid>                     取单个附件的元信息
+#   download <attachment-id-or-uuid> [-o <output>]     下载附件到本地文件（v0.13）
 #   delete <attachment-id-or-uuid>                     删除附件
 #
-# 设计依据（v0.10 探查 server 源码）：
+# 设计依据（探查 server 源码）：
 #   - POST /api/upload-file   multipart/form-data，file 字段必填，可选 issue_id/comment_id/chat_session_id/task_id
 #     （task_id 路径需要 X-Actor-Source=task_token 头，agent 内部才用；mul_ PAT 走不了，只能走 issue/comment 上下文）
 #   - max upload size = 100 MB (handler/file.go: maxUploadSize = 100 << 20)
 #   - 响应 AttachmentResponse: id / url / download_url / markdown_url / filename / content_type / size_bytes / ...
 #   - markdown_url 是持久 URL（无 TTL），可安全持久化进 description
 #   - 图片嵌入：![name](markdown_url)；其他文件：!file[name](url)
+#   - download 走 GET /api/attachments/{id}/download-metadata（multica v0.7.x 新增路由）：
+#     按附件行解析 workspace（跨 workspace 的 markdown 链接也能解析），返回新签的
+#     download_url / attachment_download_url（带 TTL，不要持久化）。脚本优先用
+#     attachment_download_url（强制 Content-Disposition: attachment），缺省回退 download_url。
 #
 # 用法示例：
 #   attachments.sh upload ./需求图.png
 #   attachments.sh upload ./需求图.png --issue LRO-45
 #   attachments.sh list LRO-45
 #   attachments.sh get <attachment-uuid>
+#   attachments.sh download <attachment-uuid> -o ./out.png
 #   attachments.sh delete <attachment-uuid>
 
 set -euo pipefail
@@ -32,6 +38,7 @@ Usage:
   attachments.sh upload <file> [--issue <id-or-uuid>] [--comment <uuid>]
   attachments.sh list   <issue-id-or-uuid>
   attachments.sh get    <attachment-id-or-uuid>
+  attachments.sh download <attachment-id-or-uuid> [-o <output-path>]
   attachments.sh delete <attachment-id-or-uuid>
 
 Common flags:
@@ -101,6 +108,7 @@ FILE_PATH=""
 ISSUE_ID=""
 COMMENT_ID=""
 ATT_ID=""
+DOWNLOAD_OUT=""
 
 # 先把全局 flag（可出现在子命令前后）抽出来：先两遍扫
 # 第一遍：从前往后，先识别"全局 flag + 子命令"的位置
@@ -204,6 +212,17 @@ case "$SUBCMD" in
     if [[ $N -eq 0 ]]; then die "$SUBCMD: missing <attachment-id-or-uuid>"; fi
     ATT_ID="${NEW_ARGS[0]}"
     ;;
+  download)
+    if [[ $N -eq 0 ]]; then die "download: missing <attachment-id-or-uuid>"; fi
+    ATT_ID="${NEW_ARGS[0]}"; i=1
+    while [[ $i -lt $N ]]; do
+      a="${NEW_ARGS[$i]}"
+      case "$a" in
+        -o|--output) DOWNLOAD_OUT="${NEW_ARGS[$((i+1))]}"; i=$((i+2)); continue ;;
+        *) die "download: unknown flag $a" ;;
+      esac
+    done
+    ;;
   -h|--help) usage; exit 0 ;;
   *) die "unknown subcommand: $SUBCMD. Try --help." ;;
 esac
@@ -212,7 +231,7 @@ esac
 ME_HTTP=$(curl -sS -o $TMP_DIR/me.json -w "%{http_code}" \
   -H "@$AUTH_HEADER_FILE" \
   -H "X-Client-Platform: multica-cli-skill" \
-  -H "X-Client-Version: 0.1.0" \
+  -H "X-Client-Version: 0.13.0" \
   -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')" \
   -H "X-Client-Capabilities: stable_attachment_urls" \
   -H "X-Workspace-ID: $WORKSPACE_ID" \
@@ -248,7 +267,7 @@ resolve_id_to_uuid() {
   code=$(curl -sS -o "$out" -w "%{http_code}" \
     -H "@$AUTH_HEADER_FILE" \
     -H "X-Client-Platform: multica-cli-skill" \
-    -H "X-Client-Version: 0.1.0" \
+    -H "X-Client-Version: 0.13.0" \
     -H "X-Client-Capabilities: stable_attachment_urls" \
     -H "X-Workspace-ID: $WORKSPACE_ID" \
     "$(ws_url "/api/issues/$id")" || echo "000")
@@ -277,7 +296,7 @@ cmd_upload() {
     -X POST
     -H "@$AUTH_HEADER_FILE"
     -H "X-Client-Platform: multica-cli-skill"
-    -H "X-Client-Version: 0.1.0"
+    -H "X-Client-Version: 0.13.0"
     -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')"
     -H "X-Client-Capabilities: stable_attachment_urls"
     -H "X-Workspace-ID: $WORKSPACE_ID"
@@ -346,7 +365,7 @@ cmd_list() {
   code=$(curl -sS -o "$out" -w "%{http_code}" \
     -H "@$AUTH_HEADER_FILE" \
     -H "X-Client-Platform: multica-cli-skill" \
-    -H "X-Client-Version: 0.1.0" \
+    -H "X-Client-Version: 0.13.0" \
     -H "X-Client-Capabilities: stable_attachment_urls" \
     -H "X-Workspace-ID: $WORKSPACE_ID" \
     "$(ws_url "/api/issues/$uuid/attachments")" || echo "000")
@@ -375,7 +394,7 @@ cmd_get() {
   code=$(curl -sS -o "$out" -w "%{http_code}" \
     -H "@$AUTH_HEADER_FILE" \
     -H "X-Client-Platform: multica-cli-skill" \
-    -H "X-Client-Version: 0.1.0" \
+    -H "X-Client-Version: 0.13.0" \
     -H "X-Client-Capabilities: stable_attachment_urls" \
     -H "X-Workspace-ID: $WORKSPACE_ID" \
     "$(ws_url "/api/attachments/$ATT_ID")" || echo "000")
@@ -399,7 +418,7 @@ cmd_delete() {
     -X DELETE \
     -H "@$AUTH_HEADER_FILE" \
     -H "X-Client-Platform: multica-cli-skill" \
-    -H "X-Client-Version: 0.1.0" \
+    -H "X-Client-Version: 0.13.0" \
     -H "X-Client-Capabilities: stable_attachment_urls" \
     -H "X-Workspace-ID: $WORKSPACE_ID" \
     "$(ws_url "/api/attachments/$ATT_ID")" || echo "000")
@@ -412,10 +431,75 @@ cmd_delete() {
   rm -f "$out"
 }
 
+cmd_download() {
+  # 1) 元信息 + 新签的下载 URL（GET /api/attachments/{id}/download-metadata）
+  #    路由按附件行自解析 workspace（与 /download 同款），跨 workspace 引用也能解析。
+  local out="$TMP_DIR/meta.json"
+  local code
+  code=$(curl -sS -o "$out" -w "%{http_code}" \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "X-Client-Platform: multica-cli-skill" \
+    -H "X-Client-Version: 0.13.0" \
+    -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')" \
+    -H "X-Client-Capabilities: stable_attachment_urls" \
+    "$SERVER_URL/api/attachments/$ATT_ID/download-metadata" || echo "000")
+  if [[ "$code" != "200" ]]; then
+    cat "$out" >&2 || true
+    rm -f "$out"
+    die "GET /api/attachments/$ATT_ID/download-metadata HTTP $code"
+  fi
+
+  local filename signed_url
+  filename=$($JQ -r '.filename // "attachment"' "$out")
+  # attachment_download_url 强制 Content-Disposition: attachment；缺省回退 download_url
+  signed_url=$($JQ -r '.attachment_download_url // .download_url // empty' "$out")
+  if [[ -z "$signed_url" ]]; then
+    rm -f "$out"
+    die "no downloadable URL in metadata response (empty attachment_download_url/download_url)"
+  fi
+  # 相对路径 → 绝对（挂在 server 上）
+  if [[ "$signed_url" == /* ]]; then
+    signed_url="$SERVER_URL$signed_url"
+  fi
+
+  # 2) 默认输出文件名 = 附件名（防止路径穿越：取 basename）
+  local target="${DOWNLOAD_OUT:-$filename}"
+  target="${target//\\//}"
+  target="${target##*/}"
+  [[ -z "$target" ]] && target="attachment"
+
+  # 3) 下载（签名 URL 不带 Authorization）
+  local dl_code
+  dl_code=$(curl -sS -L -o "$target" -w "%{http_code}" "$signed_url" || echo "000")
+  if [[ "$dl_code" != "200" ]]; then
+    rm -f "$target"
+    die "download failed: HTTP $dl_code"
+  fi
+
+  local size ctype
+  size=$($JQ -r '.size_bytes // 0' "$out")
+  ctype=$($JQ -r '.content_type // ""' "$out")
+  rm -f "$out"
+
+  if [[ "$OUTPUT_JSON" == "true" ]]; then
+    $JQ -n --arg id "$ATT_ID" --arg file "$target" --arg name "$filename" \
+      --arg ctype "$ctype" --argjson size "$size" \
+      '{id:$id, saved_to:$file, filename:$name, content_type:$ctype, size_bytes:$size}'
+  else
+    cat <<EOF
+Downloaded: $filename
+  saved_to:     $target
+  content_type: $ctype
+  size:         $size bytes
+EOF
+  fi
+}
+
 # ---- dispatch ----
 case "$SUBCMD" in
-  upload) cmd_upload ;;
-  list)   cmd_list ;;
-  get)    cmd_get ;;
-  delete) cmd_delete ;;
+  upload)   cmd_upload ;;
+  list)     cmd_list ;;
+  get)      cmd_get ;;
+  download) cmd_download ;;
+  delete)   cmd_delete ;;
 esac

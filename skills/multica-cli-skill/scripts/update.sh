@@ -8,7 +8,9 @@
 #   <id-or-identifier>      工单标识。形如 LRO-37 或 UUID；后端 /api/issues/{x} 同时接。
 #
 # 可修改字段（至少给一个）：
-#   --status backlog|todo|in_progress|in_review|done|blocked|cancelled
+#   --status KEY                       7 个内建值或 workspace 自定义状态 key（大小写不敏感，
+#                                      自定义 key 用 status.sh list 查；传未知 key 会先查
+#                                      /api/issue-statuses 校验，命中则归一化为标准 key）
 #   --priority urgent|high|medium|low|none
 #   --assignee-type member|agent|squad --assignee-id UUID
 #   --assignee "前端组" | "老王"          # 按名字 fuzzy match squad→agent→member
@@ -19,6 +21,10 @@
 #   --project "支付重构"                  # 按项目名 fuzzy match /api/projects
 #   --title TEXT
 #   --description TEXT
+#   --duplicate-of-issue-id UUID        # 标记为另一 issue 的 duplicate（同时把状态置为 cancelled）
+#   --suppress-run                      # 应用变更但不触发 agent run（"暂时不启动"）
+#   --stop-previous-assignee-runs       # workflow handoff 发生时，取消原负责人未完成的 run
+#   --enter-workflow-step               # 换项目时进入目标 workflow 对应列，触发 handoff（MUL-7420）
 #   --json '{"k":"v",...}'                # 原始 body（escape hatch，跳过白名单校验）
 #
 # 输出 / 控制:
@@ -49,6 +55,10 @@ PROJECT_ID=""
 PROJECT_NAME=""
 TITLE_NEW=""
 DESCRIPTION_NEW=""
+DUPLICATE_OF=""
+SUPPRESS_RUN="false"
+STOP_PREV_RUNS="false"
+ENTER_WF_STEP="false"
 RAW_JSON=""
 CONFIG_PATH=""
 SERVER_URL_OVERRIDE=""
@@ -57,13 +67,16 @@ WORKSPACE_ID_OVERRIDE=""
 OUTPUT_JSON="false"
 DRY_RUN="false"
 ASSUME_YES="false"
+STATUS_NEEDS_CATALOG="false"
 
 # ---- 白名单 ----
+# status：内建 7 个本地直接放行；其他值视为自定义状态 key，会在凭证解析后
+# 调 /api/issue-statuses 校验（v0.13 起支持 workspace 自定义状态，MUL-6243）。
 ALLOWED_STATUSES=(backlog todo in_progress in_review done blocked cancelled)
 ALLOWED_PRIORITIES=(urgent high medium low none)
 ALLOWED_ASSIGNEE_TYPES=(member agent squad)
 
-usage() { sed -n '2,46p' "$0"; }
+usage() { sed -n '2,40p' "$0"; }
 die()   { echo "ERROR: $*" >&2; exit 1; }
 
 umask 077
@@ -118,6 +131,10 @@ while [[ $# -gt 0 ]]; do
     --project)       PROJECT_NAME="$2"; shift 2;;
     --title)         TITLE_NEW="$2"; shift 2;;
     --description)   DESCRIPTION_NEW="$2"; shift 2;;
+    --duplicate-of-issue-id) DUPLICATE_OF="$2"; shift 2;;
+    --suppress-run)  SUPPRESS_RUN="true"; shift;;
+    --stop-previous-assignee-runs) STOP_PREV_RUNS="true"; shift;;
+    --enter-workflow-step) ENTER_WF_STEP="true"; shift;;
     --json)          RAW_JSON="$2"; shift 2;;
     --config)        CONFIG_PATH="$2"; shift 2;;
     --server-url)    SERVER_URL_OVERRIDE="$2"; shift 2;;
@@ -142,7 +159,11 @@ done
 contains() { local needle="$1"; shift; for x in "$@"; do [[ "$x" == "$needle" ]] && return 0; done; return 1; }
 
 if [[ -n "$STATUS" ]]; then
-  contains "$STATUS" "${ALLOWED_STATUSES[@]}" || die "--status must be one of: ${ALLOWED_STATUSES[*]}"
+  if ! contains "$STATUS" "${ALLOWED_STATUSES[@]}"; then
+    # 不是内建值：可能是 workspace 自定义状态 key。延迟到凭证解析后由
+    # resolve_custom_status 对 /api/issue-statuses 校验（见 STATUS_NEEDS_CATALOG）。
+    STATUS_NEEDS_CATALOG="true"
+  fi
 fi
 if [[ -n "$PRIORITY" ]]; then
   contains "$PRIORITY" "${ALLOWED_PRIORITIES[@]}" || die "--priority must be one of: ${ALLOWED_PRIORITIES[*]}"
@@ -206,7 +227,7 @@ api_get() {
     -sS -o "$outfile" -w "%{http_code}"
     -H "@$AUTH_HEADER_FILE"
     -H "X-Client-Platform: multica-cli-skill"
-    -H "X-Client-Version: 0.1.0"
+    -H "X-Client-Version: 0.13.0"
     -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')"
     -H "X-Client-Capabilities: stable_attachment_urls"
   )
@@ -225,7 +246,7 @@ api_put() {
     -H "@$AUTH_HEADER_FILE"
     -H "Content-Type: application/json"
     -H "X-Client-Platform: multica-cli-skill"
-    -H "X-Client-Version: 0.1.0"
+    -H "X-Client-Version: 0.13.0"
     -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')"
     -H "X-Client-Capabilities: stable_attachment_urls"
   )
@@ -241,6 +262,43 @@ if [[ "$ME_HTTP" != "200" ]]; then
   die "/api/me returned HTTP $ME_HTTP - token invalid or expired."
 fi
 rm -f $TMP_DIR/me.json
+
+# ---- 自定义 status 校验（v0.13，MUL-6243）----
+# 服务端把 status 按 workspace 的状态目录解析：大小写不敏感、去首尾空格，
+# 命中内建 7 个或任意激活的自定义 key。这里对非内建值拉一次目录做同样的校验，
+# 命中则归一化成标准 key，未命中立即报错并列出可用值，避免白打一次 PUT。
+resolve_custom_status() {
+  [[ -z "$WORKSPACE_ID" ]] && die "--status \"$STATUS\" is not a built-in status and no workspace_id is available to check the status catalog. Set workspace_id in config or pass --workspace-id."
+  local out="$TMP_DIR/statuses.json" code
+  code=$(curl -sS -o "$out" -w "%{http_code}" \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "X-Client-Platform: multica-cli-skill" \
+    -H "X-Client-Version: 0.13.0" \
+    -H "X-Client-OS: $(uname -s | tr '[:upper:]' '[:lower:]')" \
+    -H "X-Client-Capabilities: stable_attachment_urls" \
+    -H "X-Workspace-ID: $WORKSPACE_ID" \
+    "$SERVER_URL/api/issue-statuses?workspace_id=$($JQ -rn --arg v "$WORKSPACE_ID" '$v|@uri')" || echo "000")
+  if [[ "$code" != "200" ]]; then
+    rm -f "$out"
+    die "GET /api/issue-statuses returned HTTP $code while validating custom status \"$STATUS\""
+  fi
+  local lc_in lc_key
+  lc_in="$(printf '%s' "$STATUS" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  lc_key="$($JQ -r --arg s "$lc_in" '[.[] | {k: (.key | ascii_downcase)}] | map(select(.k == $s)) | .[0].k // empty' "$out")"
+  if [[ -n "$lc_key" ]]; then
+    # 归一化为目录里的标准 key（服务端存储要求 canonical key）
+    STATUS="$lc_key"
+  else
+    local allowed
+    allowed=$($JQ -r '[.[].key] | join(", ")' "$out")
+    rm -f "$out"
+    die "--status \"$STATUS\" is not in this workspace's status catalog. Valid keys: $allowed (use status.sh list to see names)"
+  fi
+  rm -f "$out"
+}
+if [[ "$STATUS_NEEDS_CATALOG" == "true" ]]; then
+  resolve_custom_status
+fi
 
 # ---- 解析 TARGET：identifier or UUID ----
 RESOLVED_ID=""
@@ -452,6 +510,10 @@ else
     --arg project_id    "$PROJECT_ID" \
     --arg title         "$TITLE_NEW" \
     --arg description   "$DESCRIPTION_NEW" \
+    --arg duplicate_of_issue_id "$DUPLICATE_OF" \
+    --argjson suppress_run "$([[ "$SUPPRESS_RUN" == "true" ]] && echo true || echo false)" \
+    --argjson stop_previous_assignee_runs "$([[ "$STOP_PREV_RUNS" == "true" ]] && echo true || echo false)" \
+    --argjson enter_workflow_step "$([[ "$ENTER_WF_STEP" == "true" ]] && echo true || echo false)" \
     '{
       status:        $status,
       priority:      $priority,
@@ -460,8 +522,13 @@ else
       project_id:    $project_id,
       title:         $title,
       description:   $description
-    } | with_entries(select(.value != null and .value != ""))' \
-    > "$BODY_FILE"
+    }
+    | with_entries(select(.value != null and .value != ""))
+    | if $duplicate_of_issue_id == "" then . else . + {duplicate_of_issue_id: $duplicate_of_issue_id} end
+    | if $suppress_run then . + {suppress_run: true} else . end
+    | if $stop_previous_assignee_runs then . + {stop_previous_assignee_runs: true} else . end
+    | if $enter_workflow_step then . + {enter_workflow_step: true} else . end
+    ' > "$BODY_FILE"
 fi
 
 BODY="$(cat "$BODY_FILE")"
@@ -523,6 +590,8 @@ if [[ -n "$STATUS" ]]; then
     echo
     echo "WARN: 正在把 in_review 工单踢回 backlog（基本等于"撤销评审"），请确认。"
   fi
+  # v0.7.x（MUL-7420）：项目 workflow 的 handoff 列会在这次状态变更时自动转派并启动 run。
+  # 想预览会发生什么：workflow.sh preview <issue> --status <key>
 fi
 
 echo
@@ -557,7 +626,18 @@ RESP=$TMP_DIR/resp.json
 HTTP=$(api_put "/api/issues/$RESOLVED_ID" "$BODY" "$RESP")
 if [[ "$HTTP" != "200" ]]; then
   echo "HTTP $HTTP" >&2
-  cat "$RESP" >&2 || true
+  # 结构化 workflow 错误（MUL-7420）
+  ERR_CODE="$(cat "$RESP" 2>/dev/null | $JQ -r '.code // ""' || true)"
+  ERR_MSG="$(cat "$RESP" 2>/dev/null | $JQ -r '.error // ""' || true)"
+  if [[ "$ERR_CODE" == "status_not_in_workflow" ]]; then
+    echo "ERROR: $ERR_MSG" >&2
+    echo "       该项目使用了 named workflow，status 必须取 workflow 列出的值之一；用 workflow.sh list 查看。" >&2
+  elif [[ "$ERR_CODE" == "workflow_step_moved" ]]; then
+    echo "ERROR: $ERR_MSG" >&2
+    echo "       这个 issue 在你的 run 工作期间被别人移动了；不要在本 run 里再改状态，需要时留评论。" >&2
+  else
+    cat "$RESP" >&2 || true
+  fi
   rm -f "$RESP" "$BODY_FILE" "$ISSUE_FILE" "$SEG_FILE" "$SQUADS_FILE" "$AGENTS_FILE" "$MEMBERS_FILE" "$PROJECTS_FILE"
   exit 1
 fi

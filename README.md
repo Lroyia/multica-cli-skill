@@ -2,7 +2,7 @@
 
 **English** | [中文](README.zh.md)
 
-Reuse the user's existing Multica CLI login configuration to create, query, and update Multica issues, and to manage comments and attachments, directly through Bash + curl + jq.
+Reuse the user's existing Multica CLI login configuration to create, query, and update Multica issues, and to manage comments, attachments, statuses, and project workflows, directly through Bash + curl + jq. Aligned with Multica server **v0.7.1** (custom statuses MUL-6243, project workflows MUL-7420, attachment download-metadata, human-only PAT minting MUL-8154).
 
 By default it reads `~/.multica/config.json` written by `multica login`. This skill **only reads** that file — it never modifies it or echoes the token back to output.
 
@@ -78,7 +78,7 @@ multica-cli-skill/
 ├── skills/
 │   └── multica-cli-skill/  # The skill itself
 │       ├── SKILL.md
-│       ├── scripts/        # order.sh, list.sh, update.sh, comment.sh, attachments.sh
+│       ├── scripts/        # order.sh, list.sh, update.sh, comment.sh, attachments.sh, status.sh, workflow.sh
 │       └── references/     # multica-cli-skill-source-map.md
 ├── README.md               # English (default)
 ├── README.zh.md            # Chinese
@@ -141,6 +141,13 @@ bash scripts/comment.sh list MUL-123 --threads-only
 # 7. Attachment
 bash scripts/attachments.sh upload ./error.png --issue MUL-123
 bash scripts/attachments.sh list MUL-123
+bash scripts/attachments.sh download <attachment-uuid> -o ./error.png
+
+# 8. Custom statuses & project workflows (Multica v0.7.x)
+bash scripts/status.sh list                              # workspace status catalog (built-in + custom)
+bash scripts/workflow.sh list                            # workflows and their handoffs
+bash scripts/workflow.sh preview MUL-123 --status in_review  # what would this move trigger?
+bash scripts/update.sh MUL-123 --status in_review --stop-previous-assignee-runs --yes
 ```
 
 ## Configuration selection and override order
@@ -218,3 +225,11 @@ Dependencies: `bash`, `curl`, `jq`, `uname`. On Windows, run via Git Bash and in
 | 50 | Substring after stripping spaces, `-`, `_` |
 
 `--strict-match` only accepts a single exact match. See `SKILL.md` for the rest of the API, parameters, and behavior.
+
+## What's new for Multica v0.7.1 (skill v0.13)
+
+- **Workspace custom statuses (MUL-6243)**: `status` on create/update accepts custom status keys from the workspace catalog, resolved case-insensitively. `status.sh list` / `status.sh keys` discover the catalog; `update.sh` validates non-builtin statuses against it and normalizes to the canonical key.
+- **Project workflows (MUL-7420)**: new `workflow.sh` — `list` / `get` / `preview` (read-only handoff preview for an issue) / `set-project` / `handoff` / `create` / `update` / `delete`. `update.sh` passes through `--stop-previous-assignee-runs` and `--enter-workflow-step`; structured errors `status_not_in_workflow` (400) and `workflow_step_moved` (409) are decoded into human-readable hints.
+- **`order.sh --no-assignee`**: create an unassigned issue and let the project workflow hand it off automatically; the effective assignee (from the handoff) is reported in the output and as `final_assignee_*` in `--json`.
+- **Attachment download**: `attachments.sh download <id> [-o path]` uses the v0.7.x `GET /api/attachments/{id}/download-metadata` route (workspace resolved from the attachment row) and prefers the forced-disposition `attachment_download_url`.
+- **Machine-credential boundary (MUL-8154)**: PAT management endpoints are human-only now; the `mul_` personal access tokens this skill relies on are unaffected, but `mcn_` / `mat_` credentials can no longer mint PATs.
